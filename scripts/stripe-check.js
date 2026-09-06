@@ -165,21 +165,65 @@ async function run(opts = {}) {
    * the checker itself printed. A session id is on screen already; a
    * PaymentIntent id is buried in the dashboard.
    */
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
   async function intentFrom(sessionId, given) {
     if (given) return { intent: given };
     if (!sessionId) return { skip: needsIntent };
-    const cs = await api.retrieveSession({ id: sessionId });
+
+    let cs;
+    try {
+      cs = await api.retrieveSession({ id: sessionId });
+    } catch (err) {
+      /*
+       * An id Stripe has never heard of is a typo or a pasted placeholder,
+       * not a broken integration. Sinking the run over it buries the steps
+       * that did have something to say.
+       */
+      if (/no such checkout\.session/i.test(err.message)) {
+        return { skip: `no such session ${sessionId} — check the id, it is the cs_test_… `
+          + 'string printed on the deposit line above' };
+      }
+      throw err;
+    }
     if (!cs.payment_intent) {
       return { skip: `session ${sessionId} has no payment yet — it has not been completed` };
     }
     return { intent: cs.payment_intent };
   }
 
+  /*
+   * Wait for a human to pay.
+   *
+   * Every run mints a fresh session, so copying an id from one run into the
+   * next is a dance that only works if you are paying attention. Waiting
+   * collapses it: the URL is on screen, you pay it, and the run carries on
+   * into the steps that move money.
+   */
+  const waitSeconds = Number(opts.waitSeconds ?? 300);
+  const pollMs = Number(opts.pollMs ?? 3000);
+
+  async function waitForPayment(sessionId, label) {
+    const until = Date.now() + waitSeconds * 1000;
+    if (!quiet) console.log(`      waiting for you to pay the ${label} — Ctrl-C to skip`);
+    for (;;) {
+      const cs = await api.retrieveSession({ id: sessionId });
+      if (cs.payment_intent) return { intent: cs.payment_intent };
+      if (Date.now() >= until) {
+        return { skip: `${label} was still open after ${waitSeconds}s — nobody paid it. `
+          + `Pay it and re-run with --session=${sessionId}` };
+      }
+      await sleep(pollMs);
+    }
+  }
+
   let depositIntent = opts.intent || null;
+  let heldSession = null, cancelSession = null;
   await step(report, 'Authorise a deposit (hold, not a charge)', async () => {
     const held = await api.hold({
       amount: DEPOSIT, currency: EUR, reference: `check-dep-${Date.now()}`, ref: 'CHECK-DEP',
     });
+    heldSession = held.ref;
     depositIntent = depositIntent || held.paymentIntent;
     /*
      * There is no PaymentIntent yet, and there is not supposed to be: Stripe
@@ -229,9 +273,26 @@ async function run(opts = {}) {
   const needsIntent = 'complete the deposit checkout above in a browser with test card '
     + '4242 4242 4242 4242, then re-run with --session=cs_… (the session id is printed above)';
 
+  /*
+   * A SECOND hold, because the first one is about to be captured and a
+   * captured intent cannot then be cancelled. Only minted when waiting, since
+   * otherwise it is one more URL nobody asked for.
+   */
+  if (opts.wait) {
+    await step(report, 'Authorise a second deposit, to cancel', async () => {
+      const held = await api.hold({
+        amount: DEPOSIT, currency: EUR, reference: `check-cnl-${Date.now()}`, ref: 'CHECK-CNL',
+      });
+      cancelSession = held.ref;
+      return { detail: `session ${held.ref}`, note: `complete this one too: ${held.checkoutUrl}` };
+    });
+  }
+
   let captureIntent = null;
   await step(report, 'Capture an authorisation', async () => {
-    const found = await intentFrom(opts.session, opts.intent);
+    const found = opts.wait && heldSession && !opts.session && !opts.intent
+      ? await waitForPayment(heldSession, 'first deposit')
+      : await intentFrom(opts.session, opts.intent);
     if (found.skip) return found;
     captureIntent = found.intent;
     const captured = await api.capture({
@@ -255,7 +316,9 @@ async function run(opts = {}) {
   await step(report, 'Cancel an authorisation', async () => {
     // A second one, deliberately: the first has been captured, and a captured
     // intent cannot be cancelled. Cancelling needs its own untouched hold.
-    const found = await intentFrom(opts.cancelSession, opts.cancelIntent);
+    const found = opts.wait && cancelSession && !opts.cancelSession && !opts.cancelIntent
+      ? await waitForPayment(cancelSession, 'second deposit')
+      : await intentFrom(opts.cancelSession, opts.cancelIntent);
     if (found.skip) {
       return { skip: `${found.skip} — this needs a SECOND, uncaptured hold (--cancel-session=cs_…)` };
     }

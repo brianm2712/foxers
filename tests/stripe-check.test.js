@@ -32,6 +32,9 @@ let failCheckoutOnce = false;
  * run. Flipped on by the tests that need an onboarded one.
  */
 let accountsReady = false;
+/* How many polls a "waiting" session takes before it reports a payment. */
+let completeAfter = 0;
+const polls = new Map();
 
 test.before(async () => {
   stripe = http.createServer(async (req, res) => {
@@ -108,8 +111,15 @@ test.before(async () => {
     const cs = pathname.match(/^\/v1\/checkout\/sessions\/([^/]+)$/);
     if (req.method === 'GET' && cs) {
       const id = decodeURIComponent(cs[1]);
-      if (!/^cs_test_done/.test(id)) return ok({ id, payment_intent: null, status: 'open' });
-      return ok({ id, payment_intent: 'pi_from_' + id, status: 'complete' });
+      if (/^cs_test_missing/.test(id)) return bad(404, `No such checkout.session: ${id}`);
+      if (/^cs_test_done/.test(id)) return ok({ id, payment_intent: 'pi_from_' + id, status: 'complete' });
+      // A session somebody is in the middle of paying: null until it is not.
+      const n = (polls.get(id) || 0) + 1;
+      polls.set(id, n);
+      if (completeAfter && n >= completeAfter) {
+        return ok({ id, payment_intent: 'pi_paid_' + id, status: 'complete' });
+      }
+      return ok({ id, payment_intent: null, status: 'open' });
     }
 
     return bad(404, `mock has no route for ${req.method} ${pathname}`);
@@ -240,6 +250,60 @@ test('a session that has not been completed is refused, not guessed at', async (
   const capture = byName(report, /capture/i);
   assert.strictEqual(capture.status, 'skip');
   assert.match(capture.reason, /not been (completed|paid)|no payment/i);
+});
+
+/*
+ * The id that does not exist is almost always a mistyped or pasted-placeholder
+ * one, not a broken integration. Sinking the run over it buries the steps that
+ * did tell you something.
+ */
+test('a session id that does not exist is a skip, not an integration failure', async () => {
+  accountsReady = true;
+  const report = await run({ secretKey: KEY, base, quiet: true, session: 'cs_test_missing_one' });
+
+  const capture = byName(report, /capture/i);
+  assert.strictEqual(capture.status, 'skip');
+  assert.match(capture.reason, /no such|does not exist|check the id/i);
+  assert.strictEqual(report.failed, 0, 'a wrong id is not a failed integration');
+});
+
+/*
+ * The whole copy-a-session-id-between-runs dance exists because each run mints
+ * a new session. Waiting removes it: it prints the URL, you pay, it carries on.
+ */
+test('waiting polls the session and then runs the money steps for real', async () => {
+  accountsReady = true;
+  completeAfter = 3;
+  polls.clear();
+
+  const report = await run({
+    secretKey: KEY, base, quiet: true, wait: true, waitSeconds: 10, pollMs: 5,
+  });
+
+  assert.strictEqual(byName(report, /capture/i).status, 'pass', JSON.stringify(report.steps));
+  assert.strictEqual(byName(report, /transfer/i).status, 'pass');
+  assert.strictEqual(byName(report, /cancel/i).status, 'pass');
+  assert.strictEqual(report.complete, true, 'every money path has now really run');
+
+  // Two separate holds: the first is captured, and a captured intent cannot
+  // then be cancelled, so cancelling needs its own.
+  assert.strictEqual(polls.size, 2, 'it waited on two different sessions');
+  completeAfter = 0;
+});
+
+test('waiting gives up rather than hanging, and says what it was waiting for', async () => {
+  accountsReady = true;
+  completeAfter = 0;   // never completes
+  polls.clear();
+
+  const report = await run({
+    secretKey: KEY, base, quiet: true, wait: true, waitSeconds: 0.05, pollMs: 5,
+  });
+
+  const capture = byName(report, /capture/i);
+  assert.strictEqual(capture.status, 'skip');
+  assert.match(capture.reason, /not completed|timed out|gave up|still open/i);
+  assert.strictEqual(report.failed, 0, 'nobody paying is not a failure');
 });
 
 test('a step that fails is reported as failed, and sinks the run', async () => {

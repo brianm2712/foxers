@@ -157,39 +157,46 @@ FOXXERS_STRIPE_SECRET_KEY=sk_test_... node scripts/stripe-check.js
 Nothing needs to be deployed for this — it talks to Stripe directly and does
 not involve the app. Run it before starting the app at all.
 
-Set `FOXXERS_PUBLIC_URL=http://localhost:8120` while it is local. **This is the
-step most likely to fail first**, and usefully so: Stripe may refuse a plain
-`http://` return URL on an account link, or a `localhost` success URL on a
-checkout session. If it does, the checker reports it as a failed step with what
-Stripe actually said — that is the answer to whether this can be exercised
-locally at all, and it is better to find out here than halfway through a
-hosted onboarding flow.
+Set `FOXXERS_PUBLIC_URL=http://localhost:8120` while it is local. This had been
+predicted as the first thing to break — Stripe refusing a plain `http://` return
+URL or a `localhost` success URL — and it was **not**: verified 2026-09-06,
+both were accepted. No tunnel is needed to exercise any of this.
 
 It refuses a live key. It creates a connected account, reads its capabilities
 back, mints an onboarding link, authorises a deposit, raises an invoice as a
 destination charge, and checks webhook signature verification — reporting what
 Stripe actually said at each step.
 
-Three steps it **cannot** do on its own, because they need a browser and a
-card: capturing, transferring and cancelling. It prints the checkout URLs and
-skips those steps. To finish them:
-
-1. **Complete the onboarding link** it printed, with Stripe's test data. Until
-   the account has `stripe_transfers`, the destination charge is refused and
-   the checker skips it.
-2. **Open the deposit URL** it printed and pay with test card
-   `4242 4242 4242 4242`, any future expiry, any CVC.
-3. **Do it a second time** — you need one hold to capture and a different,
-   untouched one to cancel. A captured intent cannot be cancelled.
-4. **Re-run with the two session ids**, which the checker printed on the
-   deposit lines. You do not need to find a PaymentIntent id anywhere: the
-   checker reads each completed session and takes the intent from it.
+Three steps it cannot do on its own, because they need a browser and a card:
+capturing, transferring and cancelling. **Use `--wait` and it will do them with
+you**, rather than making you carry ids between runs:
 
 ```bash
-FOXXERS_STRIPE_SECRET_KEY=sk_test_... node scripts/stripe-check.js \
-  --account=acct_from_step_one \
-  --session=cs_test_first \
-  --cancel-session=cs_test_second
+FOXXERS_STRIPE_SECRET_KEY=sk_test_... FOXXERS_PUBLIC_URL=http://localhost:8120 \
+  node scripts/stripe-check.js --wait --account=acct_...
+```
+
+It prints two deposit checkout URLs, then waits. Open each one and pay with
+test card `4242 4242 4242 4242`, any future expiry, any CVC. As each is paid
+the run carries on by itself and finishes the money steps.
+
+Two deposits, not one, and deliberately: the first is captured, and a captured
+intent cannot then be cancelled, so cancelling needs its own untouched hold.
+
+- `--wait-seconds=300` is how long it waits before giving up. Nobody paying is
+  reported as a skip, not a failure.
+- Ctrl-C skips the wait. The steps are then reported as skipped, which is the
+  truth.
+- **Complete the onboarding link first** if the destination charge is still
+  skipping — until the account has `stripe_transfers` Stripe refuses it, and
+  refuses it correctly.
+
+If you would rather do it in separate runs, pass the session ids that were
+printed on the deposit lines:
+
+```bash
+node scripts/stripe-check.js --account=acct_... \
+  --session=cs_test_... --cancel-session=cs_test_...
 ```
 
 `--intent=pi_…` and `--cancel-intent=pi_…` still work if you happen to have the
