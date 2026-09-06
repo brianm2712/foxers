@@ -39,15 +39,24 @@ const METHODS = [
 const METHOD_BY_KEY = new Map(METHODS.map((m) => [m.key, m]));
 
 /*
- * A deposit's life. `held` is the only state money can leave from, and it can
- * only go one of three ways — which is what stops a deposit being both
- * credited to an invoice and pocketed by the foxxer.
+ * A deposit's life.
+ *
+ * `pending` exists because a real card is not charged the instant a form is
+ * submitted: the customer has to complete a checkout, and we only learn the
+ * outcome when the provider says so. The `manual` provider skips straight to
+ * `held` because nothing has to happen; Revolut does not.
+ *
+ * `held` is the only state money can leave from, and it can only go one of
+ * three ways — which is what stops a deposit being both credited against an
+ * invoice and pocketed by the foxxer.
  */
 const DEPOSIT_STATES = {
+  pending: ['held', 'failed', 'refunded'],
   held: ['credited', 'captured', 'refunded'],
   credited: [],
   captured: [],
   refunded: [],
+  failed: [],
 };
 
 class PaymentError extends Error {
@@ -101,15 +110,19 @@ function depositAmount(region) {
   return DEPOSIT_AMOUNT[region === 'UK' ? 'UK' : 'IE'];
 }
 
-function holdDeposit(store, { customerId, region, providerName }) {
+async function holdDeposit(store, { customerId, region, providerName, reference }) {
   const provider = providerFor(providerName);
   const amount = depositAmount(region);
   const currency = currencyFor(region);
-  const result = provider.hold({ amount, currency });
+  const result = await provider.hold({ amount, currency, reference });
+
+  // A provider that needs the customer to do something hands back `pending`
+  // and somewhere to send them. One that does not says `held` and is done.
+  const status = result.state === 'pending' ? 'pending' : 'held';
 
   const payment = store.insert('payments', {
     kind: 'deposit',
-    status: 'held',
+    status,
     amount,
     currency,
     customerId,
@@ -118,12 +131,27 @@ function holdDeposit(store, { customerId, region, providerName }) {
     method: 'card',
     provider: provider.key,
     providerRef: result.ref,
+    checkoutUrl: result.checkoutUrl || null,
     moved: !!result.moved,
     heldAt: new Date().toISOString(),
     settledAt: null,
   });
-  store.log('deposit.held', payment.id, { amount, currency });
+  store.log(`deposit.${status}`, payment.id, { amount, currency, provider: provider.key });
   return payment;
+}
+
+/*
+ * The provider has told us how a pending payment finished. Called from the
+ * webhook, never from a page: a browser saying "I paid" is not evidence.
+ */
+function settleDeposit(store, paymentId, { ok, providerRef }) {
+  const payment = store.get('payments', paymentId);
+  if (!payment) throw new PaymentError('No such payment', 404, 'not_found');
+  if (payment.status !== 'pending') return payment;   // already resolved; webhooks repeat
+  return transitionDeposit(store, paymentId, ok ? 'held' : 'failed', {
+    moved: !!ok,
+    providerRef: providerRef || payment.providerRef,
+  });
 }
 
 function transitionDeposit(store, paymentId, to, extra = {}) {
@@ -141,11 +169,11 @@ function transitionDeposit(store, paymentId, to, extra = {}) {
 }
 
 /** The quote was declined: the foxxer is paid for the time they spent on it. */
-function captureDeposit(store, paymentId, proId) {
+async function captureDeposit(store, paymentId, proId) {
   const payment = store.get('payments', paymentId);
   if (!payment) throw new PaymentError('No such payment', 404, 'not_found');
   const provider = providerFor(payment.provider);
-  const result = provider.capture({ payment });
+  const result = await provider.capture({ payment });
   return transitionDeposit(store, paymentId, 'captured',
     { proId, providerRef: result.ref, moved: !!result.moved });
 }
@@ -156,18 +184,18 @@ function creditDeposit(store, paymentId, proId) {
 }
 
 /** Nobody quoted, so nobody earned it. */
-function refundDeposit(store, paymentId) {
+async function refundDeposit(store, paymentId) {
   const payment = store.get('payments', paymentId);
   if (!payment) throw new PaymentError('No such payment', 404, 'not_found');
   const provider = providerFor(payment.provider);
-  const result = provider.refund({ payment });
+  const result = await provider.refund({ payment });
   return transitionDeposit(store, paymentId, 'refunded',
     { providerRef: result.ref, moved: !!result.moved });
 }
 
 /* ---- taking the balance ---------------------------------------------- */
 
-function takePayment(store, { invoice, pro, amount, method, providerName }) {
+async function takePayment(store, { invoice, pro, amount, method, providerName }) {
   if (!METHOD_BY_KEY.has(method)) {
     throw new PaymentError(`Unknown payment method: ${method}`, 400, 'bad_method');
   }
@@ -176,10 +204,10 @@ function takePayment(store, { invoice, pro, amount, method, providerName }) {
   const due = cents(amount);
   if (!(due > 0)) throw new PaymentError('Nothing to take', 400, 'bad_request');
 
-  const result = provider.charge({ amount: due, currency, method });
+  const result = await provider.charge({ amount: due, currency, method, reference: invoice.number });
   const payment = store.insert('payments', {
     kind: 'balance',
-    status: 'paid',
+    status: result.state === 'pending' ? 'pending' : 'paid',
     amount: due,
     currency,
     customerId: invoice.customerId,
@@ -189,9 +217,10 @@ function takePayment(store, { invoice, pro, amount, method, providerName }) {
     method,
     provider: provider.key,
     providerRef: result.ref,
+    checkoutUrl: result.checkoutUrl || null,
     moved: !!result.moved,
     heldAt: null,
-    settledAt: new Date().toISOString(),
+    settledAt: result.state === 'pending' ? null : new Date().toISOString(),
   });
   store.log('payment.taken', payment.id, { amount: due, method, invoice: invoice.number });
   return payment;
@@ -199,6 +228,6 @@ function takePayment(store, { invoice, pro, amount, method, providerName }) {
 
 module.exports = {
   PaymentError, METHODS, METHOD_BY_KEY, DEPOSIT_AMOUNT, DEPOSIT_STATES,
-  depositAmount, currencyFor, holdDeposit, captureDeposit, creditDeposit,
-  refundDeposit, takePayment, registerProvider, providerFor, manual,
+  depositAmount, currencyFor, holdDeposit, settleDeposit, captureDeposit,
+  creditDeposit, refundDeposit, takePayment, registerProvider, providerFor, manual,
 };

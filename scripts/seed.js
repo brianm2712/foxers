@@ -125,174 +125,182 @@ for (const spec of PROS) {
   created.push(pro);
 }
 
-/*
- * A customer account, so the other half of the app can be signed into with
- * the same demo password. Every job below belongs to her.
- */
-const ciara = D.createCustomerAccount(store, {
-  name: 'Ciara Doyle', email: 'ciara@example.com', phone: '087 555 0303',
-  address: '14 Grange Road, Rathfarnham, Dublin 16', area: 'dublin',
-  passwordHash,
-});
-
-/* One job all the way through, so the money screen is not empty. */
-const declan = created[0];
-const { request } = D.createRequest(store, () => 'seed', {
-  trade: 'electrician', area: 'dublin', urgency: 'week',
-  description: 'Kitchen sockets keep tripping the board. Two double sockets and the oven circuit. House is a 1970s semi in Rathfarnham.',
-  proId: declan.id,
-  customerId: ciara.id,
-});
-
-const quote = D.createQuote(store, declan.id, {
-  requestId: request.id,
-  title: 'Kitchen circuit repair and socket replacement',
-  lines: [
-    { kind: 'labour', description: 'Fault finding and testing', qty: 3, unitPrice: 65, vatClass: 'reduced' },
-    { kind: 'labour', description: 'Replace two double sockets', qty: 1.5, unitPrice: 65, vatClass: 'reduced' },
-    { kind: 'materials', description: 'MK double sockets', qty: 2, unitPrice: 18.5, vatClass: 'reduced' },
-    { kind: 'materials', description: '2.5mm T&E cable (25m)', qty: 1, unitPrice: 42, vatClass: 'reduced' },
-  ],
-  withholdingRate: 20,
-  notes: 'Price assumes the existing run is reusable. If the cable has to be pulled back to the board that is a variation.',
-  terms: 'Payment within 14 days of invoice. Materials remain the property of Byrne Electrical until paid in full.',
-});
-D.acceptQuote(store, quote.id, 'customer');
-const invoice = D.createInvoice(store, declan.id, {
-  quoteId: quote.id,
-  variations: [{ kind: 'labour', description: 'Additional cable run to board (agreed on site)', qty: 1, unitPrice: 85, vatClass: 'reduced' }],
-  withholdingRate: 20,
-  dueDays: 14,
-});
-/* Backdate it so the chase engine has something to say. */
-store.update('invoices', invoice.id, {
-  issuedAt: new Date(Date.now() - 24 * 86400000).toISOString(),
-  dueAt: new Date(Date.now() - 10 * 86400000).toISOString(),
-});
-
-/*
- * A quote sitting with the customer, with real times on it — this is the one
- * that shows the part that matters: accepting it books the hour.
- */
-const { request: waiting } = D.createRequest(store, () => 'seed', {
-  trade: 'electrician', area: 'dublin', urgency: 'flexible',
-  description: 'Want an EV charger on the gable wall. Board is in the hall, car sits on the drive about eight metres away.',
-  proId: declan.id,
-  customerId: ciara.id,
-});
-const offered = slotsFor(D.availabilityFor(store, declan.id), 180, {
-  days: 21, busy: D.busyFor(store, declan.id),
-}).filter((_, i) => i % 7 === 0).slice(0, 3).map((sl) => sl.start);
-D.createQuote(store, declan.id, {
-  requestId: waiting.id,
-  title: 'EV charger supply and install — 7.4kW',
-  minutes: 180,
-  slots: offered,
-  lines: [
-    { kind: 'labour', description: 'Install and commission charge point', qty: 4, unitPrice: 65, vatClass: 'reduced' },
-    { kind: 'materials', description: '7.4kW charge point', qty: 1, unitPrice: 690, vatClass: 'reduced' },
-    { kind: 'materials', description: 'Type A RCBO, cable and containment', qty: 1, unitPrice: 145, vatClass: 'reduced' },
-  ],
-  withholdingRate: 20,
-  notes: 'Assumes the board has a free way and the run is surface-clipped. Chasing the wall is extra.',
-  terms: 'Payment on completion by card, wallet or transfer.',
-});
-
-/*
- * And one that was turned down, so the foxxer's earned deposits are not zero.
- */
-const { request: turned } = D.createRequest(store, () => 'seed', {
-  trade: 'electrician', area: 'dublin', urgency: 'planning',
-  description: 'Thinking about rewiring the whole house next year, wondering roughly what it would run to.',
-  proId: declan.id,
-  customerId: ciara.id,
-});
-const rejected = D.createQuote(store, declan.id, {
-  requestId: turned.id,
-  title: 'Full rewire — three bed semi',
-  lines: [
-    { kind: 'labour', description: 'Rewire, first and second fix', qty: 60, unitPrice: 65, vatClass: 'reduced' },
-    { kind: 'materials', description: 'Cable, boxes, accessories, board', qty: 1, unitPrice: 2400, vatClass: 'reduced' },
-  ],
-  withholdingRate: 20,
-});
-D.declineQuote(store, rejected.id, 'Leaving it until next year.');
-
-/*
- * One job all the way to the door: quoted with times, accepted into the
- * diary, invoiced and tapped on the card reader — which is what produces a
- * receipt, and the receipt is the thing the customer keeps.
- */
-const { request: finished } = D.createRequest(store, () => 'seed', {
-  trade: 'electrician', area: 'dublin', urgency: 'week',
-  description: 'Outside light at the back door is dead and the switch feels warm to touch.',
-  proId: declan.id,
-  customerId: ciara.id,
-});
-const doneSlots = slotsFor(D.availabilityFor(store, declan.id), 60, {
-  days: 21, busy: D.busyFor(store, declan.id),
-}).slice(0, 2).map((sl) => sl.start);
-const doneQuote = D.createQuote(store, declan.id, {
-  requestId: finished.id,
-  title: 'Outside light — replace fitting and switch',
-  minutes: 60,
-  slots: doneSlots,
-  lines: [
-    { kind: 'labour', description: 'Diagnose and replace', qty: 1, unitPrice: 65, vatClass: 'reduced' },
-    { kind: 'materials', description: 'IP65 bulkhead fitting and switch', qty: 1, unitPrice: 48, vatClass: 'reduced' },
-  ],
-  withholdingRate: 0,
-});
-D.acceptQuote(store, doneQuote.id, 'customer', { start: doneSlots[0] });
-const doneInvoice = D.createInvoice(store, declan.id, { quoteId: doneQuote.id, dueDays: 14 });
-D.settleInvoice(store, doneInvoice.id, { method: 'card_reader' });
-
-/* And one still waiting to be priced, so the Requests screen is not empty. */
-D.createRequest(store, () => 'seed', {
-  trade: 'electrician', area: 'dublin', urgency: 'week',
-  description: 'Immersion trips the RCD every time it goes on. Two-storey house in Terenure, cylinder in the hot press upstairs.',
-  proId: declan.id,
-  customerId: ciara.id,
-});
-
-/* A couple of straightforward bookings, and reviews behind them. */
-const marek = created[1];
-const boilerService = store.find('services', (s) => s.proId === marek.id && s.bookable);
-const past = new Date(Date.now() - 9 * 86400000);
-past.setUTCHours(9, 0, 0, 0);
-const pastBooking = store.insert('bookings', {
-  ref: 'HJKL-2347', proId: marek.id, serviceId: boilerService.id,
-  customerId: D.upsertCustomer(store, { name: 'Eoin Walsh', phone: '086 555 0404', address: '7 Seapark, Malahide, Co. Dublin' }).id,
-  kind: 'booking', status: 'done',
-  start: past.toISOString(), end: new Date(past.getTime() + boilerService.minutes * 60000).toISOString(),
-  minutes: boilerService.minutes, price: boilerService.price,
-  address: '7 Seapark, Malahide, Co. Dublin', notes: 'Vaillant, about 8 years old.',
-  acceptedAt: past.toISOString(), doneAt: past.toISOString(),
-});
-D.addReview(store, { bookingId: pastBooking.id, rating: 5, text: 'Arrived when he said he would, serviced the boiler and sent the cert the same evening. Booked the next one already.' });
-
-for (const [pro, rating, text] of [
-  [created[0], 5, 'Straight answer on the phone and a written quote the same day. No messing.'],
-  [created[0], 4, 'Good work on the board. Took a day longer than planned but he told me up front.'],
-  [created[2], 5, 'Beautiful job on the wardrobes. Tidied up better than she found it.'],
-  [created[3], 4, 'Fixed the ridge tiles after the storm. Fair price for an emergency.'],
-]) {
-  const svc = store.find('services', (s) => s.proId === pro.id);
-  const b = store.insert('bookings', {
-    ref: require('../server/lib/store').newRef(), proId: pro.id, serviceId: svc.id,
-    customerId: D.upsertCustomer(store, { name: 'Past customer', phone: `08${Math.floor(Math.random() * 9)} 555 0${Math.floor(Math.random() * 900 + 100)}` }).id,
-    kind: 'booking', status: 'done',
-    start: new Date(Date.now() - 30 * 86400000).toISOString(),
-    end: new Date(Date.now() - 30 * 86400000 + 3600000).toISOString(),
-    minutes: svc.minutes, price: svc.price, address: '', notes: '',
+async function main() {
+  /*
+   * A customer account, so the other half of the app can be signed into with
+   * the same demo password. Every job below belongs to her.
+   */
+  const ciara = D.createCustomerAccount(store, {
+    name: 'Ciara Doyle', email: 'ciara@example.com', phone: '087 555 0303',
+    address: '14 Grange Road, Rathfarnham, Dublin 16', area: 'dublin',
+    passwordHash,
   });
-  D.addReview(store, { bookingId: b.id, rating, text });
+
+  /* One job all the way through, so the money screen is not empty. */
+  const declan = created[0];
+  const { request } = await D.createRequest(store, () => 'seed', {
+    trade: 'electrician', area: 'dublin', urgency: 'week',
+    description: 'Kitchen sockets keep tripping the board. Two double sockets and the oven circuit. House is a 1970s semi in Rathfarnham.',
+    proId: declan.id,
+    customerId: ciara.id,
+  });
+
+  const quote = D.createQuote(store, declan.id, {
+    requestId: request.id,
+    title: 'Kitchen circuit repair and socket replacement',
+    lines: [
+      { kind: 'labour', description: 'Fault finding and testing', qty: 3, unitPrice: 65, vatClass: 'reduced' },
+      { kind: 'labour', description: 'Replace two double sockets', qty: 1.5, unitPrice: 65, vatClass: 'reduced' },
+      { kind: 'materials', description: 'MK double sockets', qty: 2, unitPrice: 18.5, vatClass: 'reduced' },
+      { kind: 'materials', description: '2.5mm T&E cable (25m)', qty: 1, unitPrice: 42, vatClass: 'reduced' },
+    ],
+    withholdingRate: 20,
+    notes: 'Price assumes the existing run is reusable. If the cable has to be pulled back to the board that is a variation.',
+    terms: 'Payment within 14 days of invoice. Materials remain the property of Byrne Electrical until paid in full.',
+  });
+  await D.acceptQuote(store, quote.id, 'customer');
+  const invoice = D.createInvoice(store, declan.id, {
+    quoteId: quote.id,
+    variations: [{ kind: 'labour', description: 'Additional cable run to board (agreed on site)', qty: 1, unitPrice: 85, vatClass: 'reduced' }],
+    withholdingRate: 20,
+    dueDays: 14,
+  });
+  /* Backdate it so the chase engine has something to say. */
+  store.update('invoices', invoice.id, {
+    issuedAt: new Date(Date.now() - 24 * 86400000).toISOString(),
+    dueAt: new Date(Date.now() - 10 * 86400000).toISOString(),
+  });
+
+  /*
+   * A quote sitting with the customer, with real times on it — this is the one
+   * that shows the part that matters: accepting it books the hour.
+   */
+  const { request: waiting } = await D.createRequest(store, () => 'seed', {
+    trade: 'electrician', area: 'dublin', urgency: 'flexible',
+    description: 'Want an EV charger on the gable wall. Board is in the hall, car sits on the drive about eight metres away.',
+    proId: declan.id,
+    customerId: ciara.id,
+  });
+  const offered = slotsFor(D.availabilityFor(store, declan.id), 180, {
+    days: 21, busy: D.busyFor(store, declan.id),
+  }).filter((_, i) => i % 7 === 0).slice(0, 3).map((sl) => sl.start);
+  D.createQuote(store, declan.id, {
+    requestId: waiting.id,
+    title: 'EV charger supply and install — 7.4kW',
+    minutes: 180,
+    slots: offered,
+    lines: [
+      { kind: 'labour', description: 'Install and commission charge point', qty: 4, unitPrice: 65, vatClass: 'reduced' },
+      { kind: 'materials', description: '7.4kW charge point', qty: 1, unitPrice: 690, vatClass: 'reduced' },
+      { kind: 'materials', description: 'Type A RCBO, cable and containment', qty: 1, unitPrice: 145, vatClass: 'reduced' },
+    ],
+    withholdingRate: 20,
+    notes: 'Assumes the board has a free way and the run is surface-clipped. Chasing the wall is extra.',
+    terms: 'Payment on completion by card, wallet or transfer.',
+  });
+
+  /*
+   * And one that was turned down, so the foxxer's earned deposits are not zero.
+   */
+  const { request: turned } = await D.createRequest(store, () => 'seed', {
+    trade: 'electrician', area: 'dublin', urgency: 'planning',
+    description: 'Thinking about rewiring the whole house next year, wondering roughly what it would run to.',
+    proId: declan.id,
+    customerId: ciara.id,
+  });
+  const rejected = D.createQuote(store, declan.id, {
+    requestId: turned.id,
+    title: 'Full rewire — three bed semi',
+    lines: [
+      { kind: 'labour', description: 'Rewire, first and second fix', qty: 60, unitPrice: 65, vatClass: 'reduced' },
+      { kind: 'materials', description: 'Cable, boxes, accessories, board', qty: 1, unitPrice: 2400, vatClass: 'reduced' },
+    ],
+    withholdingRate: 20,
+  });
+  await D.declineQuote(store, rejected.id, 'Leaving it until next year.');
+
+  /*
+   * One job all the way to the door: quoted with times, accepted into the
+   * diary, invoiced and tapped on the card reader — which is what produces a
+   * receipt, and the receipt is the thing the customer keeps.
+   */
+  const { request: finished } = await D.createRequest(store, () => 'seed', {
+    trade: 'electrician', area: 'dublin', urgency: 'week',
+    description: 'Outside light at the back door is dead and the switch feels warm to touch.',
+    proId: declan.id,
+    customerId: ciara.id,
+  });
+  const doneSlots = slotsFor(D.availabilityFor(store, declan.id), 60, {
+    days: 21, busy: D.busyFor(store, declan.id),
+  }).slice(0, 2).map((sl) => sl.start);
+  const doneQuote = D.createQuote(store, declan.id, {
+    requestId: finished.id,
+    title: 'Outside light — replace fitting and switch',
+    minutes: 60,
+    slots: doneSlots,
+    lines: [
+      { kind: 'labour', description: 'Diagnose and replace', qty: 1, unitPrice: 65, vatClass: 'reduced' },
+      { kind: 'materials', description: 'IP65 bulkhead fitting and switch', qty: 1, unitPrice: 48, vatClass: 'reduced' },
+    ],
+    withholdingRate: 0,
+  });
+  await D.acceptQuote(store, doneQuote.id, 'customer', { start: doneSlots[0] });
+  const doneInvoice = D.createInvoice(store, declan.id, { quoteId: doneQuote.id, dueDays: 14 });
+  await D.settleInvoice(store, doneInvoice.id, { method: 'card_reader' });
+
+  /* And one still waiting to be priced, so the Requests screen is not empty. */
+  await D.createRequest(store, () => 'seed', {
+    trade: 'electrician', area: 'dublin', urgency: 'week',
+    description: 'Immersion trips the RCD every time it goes on. Two-storey house in Terenure, cylinder in the hot press upstairs.',
+    proId: declan.id,
+    customerId: ciara.id,
+  });
+
+  /* A couple of straightforward bookings, and reviews behind them. */
+  const marek = created[1];
+  const boilerService = store.find('services', (s) => s.proId === marek.id && s.bookable);
+  const past = new Date(Date.now() - 9 * 86400000);
+  past.setUTCHours(9, 0, 0, 0);
+  const pastBooking = store.insert('bookings', {
+    ref: 'HJKL-2347', proId: marek.id, serviceId: boilerService.id,
+    customerId: D.upsertCustomer(store, { name: 'Eoin Walsh', phone: '086 555 0404', address: '7 Seapark, Malahide, Co. Dublin' }).id,
+    kind: 'booking', status: 'done',
+    start: past.toISOString(), end: new Date(past.getTime() + boilerService.minutes * 60000).toISOString(),
+    minutes: boilerService.minutes, price: boilerService.price,
+    address: '7 Seapark, Malahide, Co. Dublin', notes: 'Vaillant, about 8 years old.',
+    acceptedAt: past.toISOString(), doneAt: past.toISOString(),
+  });
+  D.addReview(store, { bookingId: pastBooking.id, rating: 5, text: 'Arrived when he said he would, serviced the boiler and sent the cert the same evening. Booked the next one already.' });
+
+  for (const [pro, rating, text] of [
+    [created[0], 5, 'Straight answer on the phone and a written quote the same day. No messing.'],
+    [created[0], 4, 'Good work on the board. Took a day longer than planned but he told me up front.'],
+    [created[2], 5, 'Beautiful job on the wardrobes. Tidied up better than she found it.'],
+    [created[3], 4, 'Fixed the ridge tiles after the storm. Fair price for an emergency.'],
+  ]) {
+    const svc = store.find('services', (s) => s.proId === pro.id);
+    const b = store.insert('bookings', {
+      ref: require('../server/lib/store').newRef(), proId: pro.id, serviceId: svc.id,
+      customerId: D.upsertCustomer(store, { name: 'Past customer', phone: `08${Math.floor(Math.random() * 9)} 555 0${Math.floor(Math.random() * 900 + 100)}` }).id,
+      kind: 'booking', status: 'done',
+      start: new Date(Date.now() - 30 * 86400000).toISOString(),
+      end: new Date(Date.now() - 30 * 86400000 + 3600000).toISOString(),
+      minutes: svc.minutes, price: svc.price, address: '', notes: '',
+    });
+    D.addReview(store, { bookingId: b.id, rating, text });
+  }
+
+  store.saveNow();
+
+  console.log(`Seeded ${created.length} tradespeople, ${store.all('services').length} services, ${store.all('reviews').length} reviews.`);
+  console.log(`Sign in with any of:`);
+  for (const p of created) console.log(`  ${p.email}  (${p.business})`);
+  console.log(`Password: ${PASSWORD}`);
+  console.log(`\nOr as a customer: ciara@example.com  (same password)`);
+
 }
 
-store.saveNow();
-
-console.log(`Seeded ${created.length} tradespeople, ${store.all('services').length} services, ${store.all('reviews').length} reviews.`);
-console.log(`Sign in with any of:`);
-for (const p of created) console.log(`  ${p.email}  (${p.business})`);
-console.log(`Password: ${PASSWORD}`);
-console.log(`\nOr as a customer: ciara@example.com  (same password)`);
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

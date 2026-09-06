@@ -25,6 +25,22 @@ const { TRADES, AREAS, URGENCY, BY_KEY } = require('./lib/trades');
 const { vatClasses, withholdingRates } = require('./lib/tax');
 const pay = require('./lib/payments');
 const { VERSION, API_VERSION } = require('./version');
+const revolut = require('./lib/providers/revolut');
+
+/*
+ * Which rail moves the money. Nothing but `manual` unless the environment
+ * says so and a key is present, so an instance that has not been set up
+ * cannot silently start taking real cards — and one that has been set up
+ * fails loudly at boot rather than at the first payment.
+ */
+const PAYMENTS = process.env.FOXXERS_PAYMENTS || 'manual';
+if (PAYMENTS === 'revolut') {
+  pay.registerProvider(revolut.create());
+  console.log('[foxxers] payments: revolut (%s)',
+    process.env.FOXXERS_REVOLUT_LIVE === '1' ? 'LIVE' : 'sandbox');
+} else if (PAYMENTS !== 'manual') {
+  throw new Error(`Unknown FOXXERS_PAYMENTS: ${PAYMENTS}`);
+}
 
 const ROOT = path.resolve(__dirname, '..');
 const DATA_DIR = process.env.FOXXERS_DATA || path.join(ROOT, 'data');
@@ -344,7 +360,7 @@ on('POST', '/api/v1/bookings', async (req, res) => {
 on('POST', '/api/v1/requests', async (req, res) => {
   const customer = requireCustomer(req, res); if (!customer) return;
   const body = await H.readJson(req);
-  const { request, deposit } = D.createRequest(store, issueJobToken,
+  const { request, deposit } = await D.createRequest(store, issueJobToken,
     { ...body, customerId: customer.id });
   const token = issueJobToken(request.ref);
   H.json(res, 201, {
@@ -380,7 +396,7 @@ on('POST', '/api/v1/jobs/:ref/accept', async (req, res, p, url) => {
   const body = await H.readJson(req);
   const quote = store.get('quotes', body.quoteId);
   if (!quote || quote.ref !== p.ref) return H.fail(req, res, 404, 'No such quote', 'not_found');
-  D.acceptQuote(store, quote.id, 'customer', { start: body.start });
+  await D.acceptQuote(store, quote.id, 'customer', { start: body.start });
   H.json(res, 200, jobView(p.ref));
 });
 
@@ -389,7 +405,7 @@ on('POST', '/api/v1/jobs/:ref/decline', async (req, res, p, url) => {
   const body = await H.readJson(req);
   const quote = store.get('quotes', body.quoteId);
   if (!quote || quote.ref !== p.ref) return H.fail(req, res, 404, 'No such quote', 'not_found');
-  D.declineQuote(store, quote.id, body.reason);
+  await D.declineQuote(store, quote.id, body.reason);
   H.json(res, 200, jobView(p.ref));
 });
 
@@ -400,6 +416,66 @@ on('POST', '/api/v1/jobs/:ref/review', async (req, res, p, url) => {
   if (!booking) return H.fail(req, res, 400, 'Only a completed booking can be reviewed', 'bad_request');
   const review = D.addReview(store, { ...body, bookingId: booking.id });
   H.json(res, 201, { id: review.id, rating: review.rating });
+});
+
+/* ---- payment webhooks ------------------------------------------------- */
+
+/*
+ * How the server learns a card actually paid.
+ *
+ * Not from the browser: a customer landing back on a success page proves
+ * nothing — anyone can open that URL. The provider signs a message and this
+ * is the only thing that moves a payment out of `pending`.
+ *
+ * The signature is checked against the RAW bytes, before parsing, because a
+ * re-serialised object is not the thing that was signed.
+ */
+on('POST', '/api/v1/webhooks/revolut', async (req, res) => {
+  const secret = process.env.FOXXERS_REVOLUT_WEBHOOK_SECRET;
+  if (!secret) return H.fail(req, res, 404, 'No such endpoint', 'not_found');
+
+  const raw = (await H.readBody(req)).toString('utf8');
+  const ok = revolut.verifyWebhook({
+    secret,
+    signatureHeader: req.headers['revolut-signature'],
+    timestamp: req.headers['revolut-request-timestamp'],
+    rawBody: raw,
+  });
+  if (!ok) {
+    store.log('webhook.rejected', 'revolut', { ip: H.clientIp(req) });
+    return H.fail(req, res, 401, 'Bad signature', 'bad_signature');
+  }
+
+  let event;
+  try { event = JSON.parse(raw); } catch { return H.fail(req, res, 400, 'Not JSON', 'bad_request'); }
+
+  const orderId = event.order_id || event.id;
+  const payment = orderId ? store.find('payments', (p) => p.providerRef === orderId) : null;
+
+  // An order we do not know about is not an error worth retrying — say so,
+  // or the provider will keep redelivering it forever.
+  if (!payment) {
+    store.log('webhook.unknown', String(orderId || ''), { event: event.event });
+    return H.json(res, 200, { ok: true, matched: false });
+  }
+
+  const state = String(event.state || event.order_state || '').toLowerCase();
+  const paid = revolut.PAID_STATES.has(state);
+  const dead = revolut.DEAD_STATES.has(state);
+  if (!paid && !dead) return H.json(res, 200, { ok: true, ignored: state });
+
+  if (payment.kind === 'deposit') {
+    pay.settleDeposit(store, payment.id, { ok: paid, providerRef: orderId });
+  } else if (payment.status === 'pending') {
+    store.update('payments', payment.id, {
+      status: paid ? 'paid' : 'failed',
+      moved: paid,
+      settledAt: new Date().toISOString(),
+    });
+    if (paid && payment.invoiceId) D.markPaid(store, payment.invoiceId, { amount: payment.amount });
+  }
+  store.log('webhook.applied', payment.id, { state, kind: payment.kind });
+  H.json(res, 200, { ok: true, matched: true });
 });
 
 /* ---- customer auth --------------------------------------------------- */
@@ -850,7 +926,7 @@ on('POST', '/api/v1/pro/invoices/:id/paid', async (req, res, p) => {
   const inv = store.get('invoices', p.id);
   if (!inv || inv.proId !== pro.id) return H.fail(req, res, 404, 'No such invoice', 'not_found');
   const body = await H.readJson(req);
-  const { invoice, payment, receipt } = D.settleInvoice(store, inv.id, {
+  const { invoice, payment, receipt } = await D.settleInvoice(store, inv.id, {
     method: body.method || 'transfer',
     amount: body.amount,
   });
@@ -961,7 +1037,8 @@ const server = http.createServer(async (req, res) => {
     if (pathname.startsWith('/api/')) {
       const isWrite = req.method !== 'GET' && req.method !== 'HEAD';
       const gate = (isWrite ? limits.write : limits.read).check(H.clientIp(req));
-      if (!gate.ok && !pathname.startsWith('/api/v1/auth/')) {
+      if (!gate.ok && !pathname.startsWith('/api/v1/auth/')
+          && !pathname.startsWith('/api/v1/webhooks/')) {
         return H.fail(req, res, 429, 'Slow down a moment.', 'rate_limited');
       }
       const hit = match(req.method, pathname);

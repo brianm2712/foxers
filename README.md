@@ -60,7 +60,9 @@ The foxxer sign-in page lists the demo logins, but only when the hostname is loc
 ### Tests
 
 ```sh
-node tests/api.test.js       # 39 — end-to-end over real HTTP
+node tests/api.test.js       # 40 — end-to-end over real HTTP
+node tests/revolut.test.js   #  8 — the Revolut adapter against a strict mock
+node tests/webhook.test.js   #  5 — webhook signatures, on a real server
 node tests/schedule.test.js  #  7 — slot generation, DST, busy-time subtraction
 node tests/tax.test.js       #  9 — VAT, RCT, CIS, reverse charge, invoice numbering
 ```
@@ -99,6 +101,7 @@ server/index.js         one HTTP server, one router, every route
 server/lib/domain.js    the business operations — everything that changes state
 server/lib/tax.js       IE and UK construction tax. Rates are data, not literals
 server/lib/payments.js  deposits, taking money, and the provider seam
+server/lib/providers/   payment rails. revolut.js is the only outbound code
 server/lib/schedule.js  availability → bookable slots, DST-correct
 server/lib/trades.js    the trade taxonomy: what is bookable, what can only be quoted
 server/lib/store.js     append-and-flush JSON store
@@ -115,7 +118,7 @@ scripts/seed.js         demo data — a marketplace worth looking at
 scripts/foxxers          start it if it is not running, then open it
 scripts/install-desktop.sh  applications-menu and desktop launcher, with the icon
 scripts/make-icons.py   app icons from the artwork (dev only, needs Pillow)
-tests/                  three suites, 55 assertions
+tests/                  five suites, 69 assertions
 ```
 
 `data/` is gitignored. It holds every password hash and the key that signs every
@@ -190,37 +193,59 @@ someone they will meet again.
 
 ---
 
-## Payments: a seam, and no money moves
+## Payments
 
-`server/lib/payments.js` defines the contract. The built-in `manual` provider records
-what *would* have happened, sets `moved: false`, and the UI says so plainly in both
-places it matters. **No card is ever charged.**
+`server/lib/payments.js` defines the contract; a provider is four methods. Two exist.
 
-Every state transition, every amount, every receipt is real, stored and tested. Wiring
-in a real rail is one object with the same four methods:
+**`manual` is the default.** It records what *would* have happened and sets
+`moved: false`, and the UI says so plainly on the deposit card and on the receipt. No
+card is charged. Every state transition, amount and receipt is still real and stored,
+so the whole flow can be exercised without a payment account.
 
-```js
-registerProvider({
-  key: 'sumup',
-  hold({ amount, currency }) { /* … */ return { ref, amount, currency, moved: true }; },
-  capture({ payment })       { /* … */ return { ref, moved: true }; },
-  refund({ payment })        { /* … */ return { ref, moved: true }; },
-  charge({ amount, currency, method }) { /* … */ return { ref, moved: true }; },
-});
+**`revolut` is a real rail.** Set it up with:
+
+```sh
+FOXXERS_PAYMENTS=revolut
+FOXXERS_REVOLUT_SECRET_KEY=sk_...          # Merchant API secret key
+FOXXERS_REVOLUT_WEBHOOK_SECRET=wh_...      # signing secret for the webhook
+FOXXERS_PUBLIC_URL=https://foxxers.com     # where customers come back to
+FOXXERS_REVOLUT_LIVE=1                     # omit entirely to stay on sandbox
 ```
 
-Nothing above that file changes. Candidates: **SumUp** if the RFID card reader is the
-priority, **Stripe** for Apple Pay plus Terminal, **Revolut** if that is already the
-business account.
+Point the Revolut webhook at `POST /api/v1/webhooks/revolut`.
+
+> **It has never made a request to Revolut.** It is written to the documented shape of
+> the Merchant API and tested against a mock that refuses what the real one refuses, but
+> no credentials exist on this machine. Run it against the sandbox before it sees a real
+> card. The API version is pinned in `revolut.js` — the Merchant API is versioned by
+> date and changes shape across versions.
+
+### A real rail is not synchronous, and that changes the flow
+
+`manual` pretends money moves the instant a form is submitted. Revolut does not: you
+create an order, the customer pays on Revolut's page, and you find out from a webhook.
+So a deposit starts `pending` with a checkout URL and only becomes `held` when Revolut
+says so — **a customer landing back on a success page is not evidence that anything was
+paid**, and nothing in the browser can move a payment.
 
 A deposit's life is a transition table, which is what stops it being both credited to an
 invoice and pocketed by the foxxer:
 
 ```
-held → credited    quote accepted; comes off the invoice
-     → captured    quote declined; the foxxer keeps it
-     → refunded    nobody quoted, so nobody earned it
+pending → held       the customer actually paid
+        → failed     they did not
+held    → credited   quote accepted; comes off the invoice
+        → captured   quote declined; the foxxer keeps it
+        → refunded   nobody quoted, so nobody earned it
 ```
+
+Money crosses to Revolut in **integer minor units** — €5.00 goes over the wire as 500 —
+and every crossing goes through `toMinor`/`fromMinor`. Getting that wrong by a factor of
+a hundred is the quiet way to lose a lot of money.
+
+Adding another rail (**SumUp** for the RFID reader, **Stripe** for Apple Pay and
+Terminal) is one more file in `server/lib/providers/` with the same four methods.
+Nothing above `payments.js` changes.
 
 ---
 
@@ -307,8 +332,9 @@ each screen on each platform is built from these routes.
 - **Node standard library only.** No npm, no build step, no lockfile, no supply chain.
   The single exception is `scripts/make-icons.py`, which regenerates the app icons
   from the artwork and runs on a workstation, never at runtime.
-- **No outbound calls.** The server talks to nothing on the internet. Adding a payment
-  provider is the first and only planned exception, and it goes behind the seam above.
+- **One place talks to the internet.** `server/lib/providers/revolut.js`, and only when
+  `FOXXERS_PAYMENTS=revolut`. Everything else — the whole app on the default settings —
+  makes no outbound request at all.
 - **No tracking, no analytics, no third-party requests** on the web client. No web fonts
   are fetched.
 - **One implementation of the arithmetic.** The quote builder prices on the server on
@@ -322,7 +348,8 @@ each screen on each platform is built from these routes.
 
 - **The iOS and iPadOS clients.** `ios/` is empty. The API above is the contract they are
   meant to be built against, and `web/public/js/api.js` is the file to mirror.
-- **A real payment provider.** See the seam above.
+- **A verified payment provider.** The Revolut adapter has never spoken to Revolut; it
+  needs a sandbox key and a run against the real API before it sees a card.
 - **Photos on a request.** The field exists and is always empty.
 - **Refunding a deposit on a request nobody ever quoted.** The state and the transition
   exist; nothing schedules it.

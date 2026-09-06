@@ -375,7 +375,7 @@ function createBooking(store, secretIssuer, input) {
 
 /* ---- request (the everything-else path) ------------------------------ */
 
-function createRequest(store, secretIssuer, input) {
+async function createRequest(store, secretIssuer, input) {
   const trade = BY_KEY.get(input.trade) || bad('Pick a trade');
   const urgency = URGENCY_BY_KEY.get(input.urgency) ? input.urgency : 'flexible';
   const description = String(input.description || '').trim();
@@ -394,7 +394,7 @@ function createRequest(store, secretIssuer, input) {
    */
   const deposit = input.deposit === null
     ? null
-    : pay.holdDeposit(store, {
+    : await pay.holdDeposit(store, {
         customerId: customer.id,
         region: pro ? pro.region : 'IE',
         providerName: input.provider,
@@ -508,7 +508,7 @@ function offerableSlots(store, pro, minutes, wanted) {
  * without the others is how a customer ends up with an agreed price and no
  * date, which is the failure this whole app exists to stop.
  */
-function acceptQuote(store, quoteId, who = 'customer', choice = {}) {
+async function acceptQuote(store, quoteId, who = 'customer', choice = {}) {
   const quote = store.get('quotes', quoteId) || notFound('Quote');
   if (quote.status === 'accepted') return quote;
   if (quote.status !== 'sent') bad(`This quote is ${quote.status} and cannot be accepted`);
@@ -577,7 +577,7 @@ function depositForQuote(store, quote) {
   return request?.depositId ? store.get('payments', request.depositId) : null;
 }
 
-function declineQuote(store, quoteId, reason = '') {
+async function declineQuote(store, quoteId, reason = '') {
   const quote = store.get('quotes', quoteId) || notFound('Quote');
   if (quote.status !== 'sent') bad(`This quote is ${quote.status}`);
   const out = store.update('quotes', quoteId, {
@@ -586,7 +586,7 @@ function declineQuote(store, quoteId, reason = '') {
 
   // The foxxer priced a job that is not happening. This is what they get for it.
   const deposit = depositForQuote(store, quote);
-  if (deposit && deposit.status === 'held') pay.captureDeposit(store, deposit.id, quote.proId);
+  if (deposit && deposit.status === 'held') await pay.captureDeposit(store, deposit.id, quote.proId);
 
   if (quote.requestId) store.update('requests', quote.requestId, { status: 'declined' });
   store.log('quote.declined', quoteId, { deposit: deposit ? deposit.id : null });
@@ -674,13 +674,13 @@ function bookingLines(store, booking) {
  * the van has pulled away. The receipt is a snapshot, not a view — it has to
  * keep saying what was charged even if the invoice is corrected afterwards.
  */
-function settleInvoice(store, invoiceId, input = {}) {
+async function settleInvoice(store, invoiceId, input = {}) {
   const inv = store.get('invoices', invoiceId) || notFound('Invoice');
   if (inv.status === 'paid') bad('That invoice is already paid');
   const pro = store.get('pros', inv.proId) || notFound('Tradesperson');
   const amount = Number(input.amount ?? inv.dueNow ?? inv.totals.payable);
 
-  const payment = pay.takePayment(store, {
+  const payment = await pay.takePayment(store, {
     invoice: inv, pro, amount,
     method: input.method || 'card_reader',
     providerName: input.provider,

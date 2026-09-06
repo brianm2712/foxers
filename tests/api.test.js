@@ -707,3 +707,10 @@ test('a wrong address gets the app and a 404, not two words of plain text', asyn
   assert.strictEqual(icon.status, 200, 'browsers ask for this unprompted');
   assert.match(icon.headers.get('content-type'), /image\/png/);
 });
+
+test('a payment webhook is the only thing that can move money, and it must be signed', async () => {
+  // The endpoint does not exist at all unless a signing secret is configured,
+  // so an instance with no payment provider cannot be poked at.
+  const off = await api('POST', '/api/v1/webhooks/revolut', { state: 'completed' }, { token: null });
+  assert.strictEqual(off.status, 404, 'no secret, no endpoint');
+});
