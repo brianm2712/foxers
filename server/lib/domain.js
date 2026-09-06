@@ -686,7 +686,47 @@ async function settleInvoice(store, invoiceId, input = {}) {
     providerName: input.provider,
   });
 
-  const paid = store.update('invoices', invoiceId, {
+  /*
+   * A real rail does not move money when a form is submitted: the customer has
+   * to complete a checkout, and we only learn the outcome from a webhook. So
+   * the invoice stays issued and no receipt is written — a receipt is proof of
+   * payment, and issuing one for money that has not arrived is the one lie
+   * this app cannot tell. `completePayment` finishes it when Stripe says so.
+   */
+  if (payment.status === 'pending') {
+    store.log('invoice.awaiting', invoiceId, {
+      number: inv.number, method: payment.method, provider: payment.provider,
+    });
+    return { invoice: inv, payment, receipt: null, checkoutUrl: payment.checkoutUrl || null };
+  }
+  return { ...completePayment(store, payment.id), checkoutUrl: null };
+}
+
+/*
+ * Money has actually arrived: mark the invoice paid and issue the receipt.
+ *
+ * Called straight after taking payment on a rail that settles on the spot
+ * (cash, a transfer the foxxer confirms), and from the webhook otherwise.
+ * Idempotent, because webhooks are redelivered: a second call returns the
+ * receipt already written rather than a second one.
+ */
+function completePayment(store, paymentId) {
+  const payment = store.get('payments', paymentId) || notFound('Payment');
+  const inv = store.get('invoices', payment.invoiceId) || notFound('Invoice');
+  const pro = store.get('pros', inv.proId) || notFound('Tradesperson');
+
+  const already = store.find('receipts', (r) => r.invoiceId === inv.id);
+  if (already) return { invoice: inv, payment, receipt: already };
+
+  // A payment that was waiting on a rail has now landed. Written here rather
+  // than at the call site so the two ways in cannot disagree about it.
+  const settled = payment.status === 'pending'
+    ? store.update('payments', payment.id, {
+        status: 'paid', moved: true, settledAt: new Date().toISOString(),
+      })
+    : payment;
+
+  const paid = store.update('invoices', inv.id, {
     status: 'paid',
     paidAt: new Date().toISOString(),
     paidMethod: payment.method,
@@ -711,14 +751,20 @@ async function settleInvoice(store, invoiceId, input = {}) {
     lines: inv.lines,
     totals: inv.totals,
     depositCredit: inv.depositCredit || 0,
-    paid: payment.amount,
-    method: payment.method,
-    provider: payment.provider,
-    providerRef: payment.providerRef,
-    settled: !!payment.moved,
+    paid: settled.amount,
+    method: settled.method,
+    provider: settled.provider,
+    providerRef: settled.providerRef,
+    settled: !!settled.moved,
+    /* Which account the money went to, and what the platform took, recorded
+     * on the document itself — a receipt that cannot answer that is not much
+     * of a record when somebody queries it a year later. */
+    destination: settled.destination || null,
+    platformFee: settled.fee || 0,
   });
-  store.log('invoice.settled', invoiceId, { number: inv.number, method: payment.method, amount });
-  return { invoice: paid, payment, receipt };
+  store.log('invoice.settled', inv.id,
+    { number: inv.number, method: settled.method, amount: settled.amount });
+  return { invoice: paid, payment: settled, receipt };
 }
 
 function markPaid(store, invoiceId, input = {}) {
@@ -818,5 +864,6 @@ module.exports = {
   customerByEmail, createCustomerAccount, updateCustomer, jobsForCustomer,
   offerableSlots, depositForQuote,
   createQuote, acceptQuote, declineQuote, createInvoice, markPaid, settleInvoice,
+  completePayment,
   chasesDue, recordChase, addReview, CHASE_STEPS, money,
 };

@@ -29,6 +29,10 @@ const DEPOSIT_AMOUNT = { IE: 5, UK: 5 };
  * the jobs and pretending otherwise puts the ledger out of step with reality.
  */
 const METHODS = [
+  /* Needs a rail that can actually produce a link; offered only where one is
+   * configured, since the alternative is promising a link and quietly
+   * recording the money as taken instead. */
+  { key: 'card', name: 'Card payment link', instant: true, needsRail: true },
   { key: 'card_reader', name: 'Card reader (tap)', instant: true },
   { key: 'apple_pay', name: 'Apple Pay', instant: true },
   { key: 'google_pay', name: 'Google Pay', instant: true },
@@ -93,13 +97,40 @@ const manual = {
 };
 
 const providers = new Map([[manual.key, manual]]);
-const registerProvider = (p) => providers.set(p.key, p);
+
+/*
+ * The rail this instance is configured to use. It used to be that no caller
+ * ever named a provider, so `providerFor(undefined)` fell through to `manual`
+ * and a registered rail was never reached by anything — the money paths were
+ * silently pretending on an instance that had been set up to charge cards.
+ */
+let configured = manual.key;
+const registerProvider = (p) => { providers.set(p.key, p); configured = p.key; };
 
 function providerFor(name) {
-  const p = providers.get(name || 'manual');
+  const p = providers.get(name || configured);
   if (!p) throw new PaymentError(`No payment provider called ${name}`, 500, 'no_provider');
   return p;
 }
+
+/*
+ * Which rail takes which method. A provider declares what it can actually
+ * take; everything else is money that moved somewhere other than through this
+ * app, and is only being recorded. Charging cash through a card rail would
+ * invent a fee and a charge that never happened, and leave the ledger claiming
+ * Stripe holds money it has never seen.
+ */
+function railFor(method, providerName) {
+  const p = providerFor(providerName);
+  if (p.key === manual.key) return p;
+  const handles = p.handles || [];
+  return handles.includes(method) ? p : manual;
+}
+
+const isOnline = (method, providerName) => railFor(method, providerName).key !== manual.key;
+
+/* What this instance can honestly offer. */
+const availableMethods = () => METHODS.filter((m) => !m.needsRail || isOnline(m.key));
 
 const currencyFor = (region) => (region === 'UK' ? 'GBP' : 'EUR');
 const cents = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -111,7 +142,10 @@ function depositAmount(region) {
 }
 
 async function holdDeposit(store, { customerId, region, providerName, reference }) {
-  const provider = providerFor(providerName);
+  // Deposits stay on `manual` until a rail declares it takes them: a real one
+  // returns `pending`, and the quote-accept path cannot yet credit a deposit
+  // that has not reached `held`. Phase 3 is where that gets handled.
+  const provider = railFor('deposit', providerName);
   const amount = depositAmount(region);
   const currency = currencyFor(region);
   const result = await provider.hold({ amount, currency, reference });
@@ -199,12 +233,18 @@ async function takePayment(store, { invoice, pro, amount, method, providerName }
   if (!METHOD_BY_KEY.has(method)) {
     throw new PaymentError(`Unknown payment method: ${method}`, 400, 'bad_method');
   }
-  const provider = providerFor(providerName);
+  const provider = railFor(method, providerName);
   const currency = currencyFor(pro.region);
   const due = cents(amount);
   if (!(due > 0)) throw new PaymentError('Nothing to take', 400, 'bad_request');
 
-  const result = await provider.charge({ amount: due, currency, method, reference: invoice.number });
+  const result = await provider.charge({
+    amount: due, currency, method, reference: invoice.number,
+    // A destination charge routes the money to the foxxer as it is taken, so
+    // the platform never holds it. Absent on `manual`, which moves nothing.
+    destination: pro.stripeAccountId || null,
+    ref: invoice.ref,
+  });
   const payment = store.insert('payments', {
     kind: 'balance',
     status: result.state === 'pending' ? 'pending' : 'paid',
@@ -218,6 +258,10 @@ async function takePayment(store, { invoice, pro, amount, method, providerName }
     provider: provider.key,
     providerRef: result.ref,
     checkoutUrl: result.checkoutUrl || null,
+    // Where it was routed and what the platform took, so the receipt can say
+    // so without asking the provider again.
+    destination: result.destination || null,
+    fee: result.fee ? cents(result.fee / 100) : 0,
     moved: !!result.moved,
     heldAt: null,
     settledAt: result.state === 'pending' ? null : new Date().toISOString(),
@@ -229,5 +273,6 @@ async function takePayment(store, { invoice, pro, amount, method, providerName }
 module.exports = {
   PaymentError, METHODS, METHOD_BY_KEY, DEPOSIT_AMOUNT, DEPOSIT_STATES,
   depositAmount, currencyFor, holdDeposit, settleDeposit, captureDeposit,
-  creditDeposit, refundDeposit, takePayment, registerProvider, providerFor, manual,
+  creditDeposit, refundDeposit, takePayment, registerProvider, providerFor,
+  railFor, isOnline, availableMethods, manual,
 };

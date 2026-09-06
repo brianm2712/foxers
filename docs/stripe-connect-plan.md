@@ -160,13 +160,33 @@ applied.
 **The money paths remain unexercised.** No charge, deposit, capture or transfer
 has ever been made against Stripe.
 
-### Phase 2 — invoice payments  (~1 day)
+### Phase 2 — invoice payments  — BUILT
 
-- Destination charge to the foxxer's account, platform fee deducted
-- Refuse to raise a payment if `chargesEnabled` is false, with a clear reason
-- `payment_intent.succeeded` webhook marks paid and issues the receipt
-- Receipt records the connected account and the fee
-- Client: confirm the PaymentIntent (see decision 5)
+- ✅ Destination charge to the foxxer's account, platform fee deducted
+- ✅ Refuse to raise a payment before they can be paid, with a clear reason —
+  and it checks **both** capabilities, not just charges (see below)
+- ✅ `checkout.session.completed` marks paid and issues the receipt, idempotently
+- ✅ Receipt records the connected account and the fee
+- ✅ Client: a link to send, per decision 5 — no Stripe.js on our pages
+
+Three things this turned up that were not in the plan.
+
+**No caller ever named a provider.** `providerFor(undefined)` fell through to
+`manual`, so a registered rail was never reached by anything. An instance
+configured for Revolut had been recording every payment as manual and moving
+nothing — the setup instructions in the README worked, and did nothing. The
+configured rail is now the default, and a provider declares which methods it
+actually takes so cash and transfers still never touch it.
+
+**An invoice was marked paid before the money moved.** `settleInvoice` wrote
+the receipt in the same breath as taking payment, which is right for cash and
+wrong for anything asynchronous. A pending payment now leaves the invoice owed
+and writes no receipt; `completePayment` finishes it from the webhook.
+
+**Two capabilities, not one.** A destination charge needs `merchant`
+card-payments *and* `recipient` transfers. Real Stripe refuses with
+`insufficient_capabilities_for_transfer` when the second is missing, so a gate
+that checked only the first would have sent a foxxer to a failure at the till.
 
 ### Phase 3 — deposits  (~1 day)
 

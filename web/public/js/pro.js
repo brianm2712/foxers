@@ -801,10 +801,28 @@ function receiptNotice(r) {
   const url = `${location.origin}${r.customerLink}`;
   return el('div', { class: 'notice ok' },
     el('strong', {}, `${r.receipt.number} — ${r.receipt.methodName}. `),
-    r.settled ? 'Payment taken. ' : 'Recorded. No card was charged: no payment provider is connected. ',
+    r.settled ? 'Payment taken. ' : 'Recorded. No card was charged through Foxxers. ',
     el('div', { class: 'row', style: 'margin-top:.5rem' },
       copyButton(url, 'Copy the receipt link'),
       el('a', { class: 'btn sm', href: r.customerLink }, 'Open it')));
+}
+
+/*
+ * A card payment has not happened yet. The foxxer has a link to hand over, and
+ * the invoice stays owed until Stripe says otherwise — so this deliberately
+ * does not look like a receipt, and does not congratulate anybody.
+ */
+function checkoutNotice(r, invoice) {
+  const phone = invoice.customer?.phone;
+  const text = `Hi — here is the payment link for invoice ${invoice.number} from ${session.pro.business}, ${cash(invoice.dueNow ?? invoice.payable)}: ${r.checkoutUrl}`;
+  return el('div', { class: 'notice info' },
+    el('strong', {}, 'Send this to your customer. '),
+    'Nothing is paid until they finish on Stripe’s page — this invoice stays owed until then.',
+    el('div', { class: 'row', style: 'margin-top:.5rem' },
+      phone ? el('a', {
+        class: 'btn sm primary', href: whatsappLink(phone, text), target: '_blank', rel: 'noreferrer',
+      }, 'Send on WhatsApp') : null,
+      copyButton(r.checkoutUrl, 'Copy the payment link')));
 }
 
 function invoiceTable(rows, reload, methods = []) {
@@ -825,13 +843,15 @@ function invoiceTable(rows, reload, methods = []) {
         methods.map((mm) => ({ value: mm.key, label: mm.name })), 'card_reader');
       const payBtn = el('button', { class: 'btn sm primary' }, 'Take payment');
       payBtn.addEventListener('click', async () => {
-        busy(payBtn, 'Taking…');
+        const done = busy(payBtn, 'Taking…');
         try {
           const r = await api.post(`/api/v1/pro/invoices/${encodeURIComponent(i.id)}/paid`,
             { method: methodSel.value });
-          wrap.prepend(receiptNotice(r));
+          // A card payment produces a link to send, not a receipt: the money
+          // has not moved and will not until the customer finishes on Stripe.
+          wrap.prepend(r.checkoutUrl ? checkoutNotice(r, i) : receiptNotice(r));
           reload();
-        } catch (err) { fail(wrap, err); }
+        } catch (err) { done(); fail(wrap, err); }
       });
       /*
        * Every cell is labelled. On a phone the table collapses to one card

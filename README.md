@@ -60,8 +60,8 @@ The foxxer sign-in page lists the demo logins, but only when the hostname is loc
 ### Tests
 
 ```sh
-node tests/api.test.js       # 41 — end-to-end over real HTTP
-node tests/connect.test.js   # 12 — Stripe Connect onboarding, against a strict mock
+node tests/api.test.js       # 42 — end-to-end over real HTTP
+node tests/connect.test.js   # 21 — Stripe Connect onboarding and invoice payment
 node tests/revolut.test.js   #  8 — the Revolut adapter against a strict mock
 node tests/webhook.test.js   #  5 — webhook signatures, on a real server
 node tests/schedule.test.js  #  7 — slot generation, DST, busy-time subtraction
@@ -119,7 +119,7 @@ scripts/seed.js         demo data — a marketplace worth looking at
 scripts/foxxers          start it if it is not running, then open it
 scripts/install-desktop.sh  applications-menu and desktop launcher, with the icon
 scripts/make-icons.py   app icons from the artwork (dev only, needs Pillow)
-tests/                  six suites, 82 assertions
+tests/                  six suites, 92 assertions
 ```
 
 `data/` is gitignored. It holds every password hash and the key that signs every
@@ -256,8 +256,8 @@ regulated activity under PSD2. **Stripe Connect** gives each foxxer their own ac
 so funds settle to them and the platform takes a stated fee without ever holding
 anything. `docs/stripe-connect-plan.md` has the full scope.
 
-**Phase 1 — onboarding — is built and has been run against real Stripe.** No money
-moves; a foxxer gets a connected account and the app learns whether they can be paid.
+**Phases 1 and 2 are built.** A foxxer gets a connected account and the app learns
+whether they can be paid; an invoice can then be taken by card as a destination charge.
 
 Connected accounts use the **Accounts v2 API** (`/v2/core/accounts`), not the legacy
 `type: 'express'` shorthand. Instead of an opaque account type, the responsibilities are
@@ -285,6 +285,31 @@ destination — a classic webhook endpoint receives the **v1 connect events**
 found by pointing the Stripe CLI at a running server and reading what turned up. The
 handler takes both families and treats them identically: neither is parsed for state, it
 just re-reads the account, so there is no payload to trust and no second code path.
+
+### Taking an invoice
+
+**A card payment is a link, not a form.** The foxxer picks *Card payment link*, the app
+creates a Stripe-hosted Checkout Session as a **destination charge** to their connected
+account, and hands back a link to send. Nothing on a Foxxers page loads from Stripe.
+
+**The invoice stays owed until Stripe says otherwise.** No receipt is written when the
+link is created — a receipt is proof of payment, and issuing one for money that has not
+arrived is the one lie this app cannot tell. `checkout.session.completed` marks it paid
+and issues the receipt, and is idempotent because webhooks are redelivered.
+
+**Cash and bank transfer never touch Stripe.** They moved outside the app, so they are
+recorded, not charged; routing them to a card rail would invent a fee and a charge that
+never happened. A rail declares what it can take (`handles` on the provider) and
+everything else falls back to recording.
+
+**The amount charged is what is payable**, which on an RCT job is net + VAT *less* the
+20% withheld at source. Billing the pre-withholding figure would overcharge the customer
+by exactly what somebody else remits to Revenue on their behalf.
+
+**Being able to take a card is not the same as being able to receive it.** A destination
+charge needs both the `merchant` card-payments capability and the `recipient` transfers
+one; real Stripe refuses with `insufficient_capabilities_for_transfer` when the second is
+missing, so the app checks both before offering to take anything.
 
 **A foxxer who has not onboarded is not hidden and not blocked.** They appear in search,
 take requests and quote like anyone else — they simply cannot be paid *through the app*

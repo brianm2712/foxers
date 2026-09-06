@@ -737,6 +737,15 @@ test('a payment webhook is the only thing that can move money, and it must be si
   assert.strictEqual(stripeOff.status, 404, 'and the same for Stripe');
 });
 
+test('an instance with no card rail does not offer a card payment link', async () => {
+  // Offering it would promise a link this instance cannot produce; the money
+  // would quietly be recorded as taken instead.
+  const m = await api('GET', '/api/v1/meta');
+  const keys = m.body.paymentMethods.map((x) => x.key);
+  assert.ok(!keys.includes('card'), 'no card link on `manual`');
+  assert.ok(keys.includes('cash') && keys.includes('transfer'), 'but the real-world ones stay');
+});
+
 test('an instance taking no cards does not nag a foxxer to onboard', async () => {
   // On `manual` there is nothing to onboard to, so "not started" would be a
   // lie that puts a permanent red card in the Business tab of every demo.

@@ -120,6 +120,27 @@ test.before(async () => {
       return ok(acct);
     }
 
+    /*
+     * Hosted checkout. The decision was that web customers go to Stripe's own
+     * page rather than the site loading js.stripe.com, so this is the shape
+     * the invoice path produces.
+     */
+    if (req.method === 'POST' && pathname === '/v1/checkout/sessions') {
+      if (body.mode !== 'payment') return bad(400, 'mode must be payment');
+      const unit = Number(body['line_items[0][price_data][unit_amount]']);
+      if (!Number.isInteger(unit) || unit <= 0) return bad(400, 'unit_amount must be a positive integer');
+      const id = 'cs_test_' + crypto.randomBytes(6).toString('hex');
+      seen[seen.length - 1].responseId = id;   // so a test can act as Stripe does
+      return ok({
+        id,
+        object: 'checkout.session',
+        url: `https://checkout.stripe.test/c/pay/${id}`,
+        payment_intent: 'pi_' + crypto.randomBytes(6).toString('hex'),
+        payment_status: 'unpaid',
+        status: 'open',
+      });
+    }
+
     // Account links stayed on v1, even for v2 accounts.
     if (req.method === 'POST' && pathname === '/v1/account_links') {
       if (!accounts.has(body.account)) return bad(404, 'No such account');
@@ -405,4 +426,179 @@ test('payouts belong to the signed-in foxxer, not to whoever asks', async () => 
 
   const o = await api('POST', '/api/v1/pro/payouts/onboard', undefined, { token: null });
   assert.strictEqual(o.status, 401, o.raw);
+});
+
+test('being able to take a card is not the same as being able to receive it', async () => {
+  /*
+   * A destination charge needs two capabilities, not one: the platform takes
+   * the card (merchant) and routes the money onward (recipient transfers).
+   * Real Stripe refuses the charge outright when the second is missing —
+   * `insufficient_capabilities_for_transfer` — so a gate that only checks the
+   * first waves the foxxer through to a failure at the till.
+   */
+  const a = accounts.get(accountId);
+  makeReady(a);
+  a.configuration.recipient.capabilities.stripe_balance.stripe_transfers.status = 'restricted';
+
+  const r = await api('GET', '/api/v1/pro/payouts');
+  assert.strictEqual(r.body.chargesEnabled, true, 'they can take a card');
+  assert.strictEqual(r.body.transfersEnabled, false, 'but nothing can be routed to them');
+  assert.strictEqual(r.body.canBePaid, false, 'so they cannot be paid');
+  assert.notStrictEqual(r.body.status, 'ready');
+
+  makeReady(a);
+  await api('GET', '/api/v1/pro/payouts');
+});
+
+/* ---- phase 2: taking an invoice ---------------------------------------- */
+
+let serviceId, proSlug, customerToken;
+
+/*
+ * A booking rather than a quote, so the payment path is exercised without
+ * dragging in the deposit, which is phase 3. Each job gets its own invoice:
+ * a job carries one receipt, so two invoices on one booking would leave the
+ * second payment looking at the first one's receipt.
+ */
+async function bookAndInvoice() {
+  const slots = await api('GET', `/api/v1/pros/${proSlug}/slots?serviceId=${serviceId}`,
+    undefined, { token: null });
+  const free = slots.body.days.flatMap((d) => d.slots);
+  const booked = await api('POST', '/api/v1/bookings', {
+    proSlug, serviceId, start: free[0].start, address: '2 Meadow View, Dublin 6',
+  }, { token: customerToken });
+  assert.strictEqual(booked.status, 201, booked.raw);
+
+  const diary = await api('GET', '/api/v1/pro/bookings');
+  const b = diary.body.bookings.find((x) => x.ref === booked.body.ref);
+  await api('PATCH', `/api/v1/pro/bookings/${b.id}`, { status: 'done' });
+
+  const inv = await api('POST', '/api/v1/pro/invoices', { bookingId: b.id, dueDays: 7 });
+  assert.strictEqual(inv.status, 201, inv.raw);
+  return { invoiceId: inv.body.id, ref: booked.body.ref, token: booked.body.token };
+}
+
+const jobView = (job) =>
+  api('GET', `/api/v1/jobs/${job.ref}?t=${encodeURIComponent(job.token)}`, undefined, { token: null });
+
+test('a foxxer with a bookable service and a customer to book it', async () => {
+  const svc = await api('POST', '/api/v1/pro/services',
+    { name: 'EICR', minutes: 60, price: 180, bookable: true });
+  assert.strictEqual(svc.status, 201, svc.raw);
+  serviceId = svc.body.id;
+  proSlug = (await api('GET', '/api/v1/auth/me')).body.pro.slug;
+
+  const cust = await api('POST', '/api/v1/auth/customer/signup', {
+    name: 'Aine Walsh', email: 'aine@example.com', password: 'a-long-enough-password',
+    phone: '087 555 0111', address: '2 Meadow View, Dublin 6', area: 'dublin',
+  }, { token: null });
+  assert.strictEqual(cust.status, 201, cust.raw);
+  customerToken = cust.body.token;
+});
+
+test('a card rail puts a card payment link on the menu', async () => {
+  const m = await api('GET', '/api/v1/meta');
+  assert.ok(m.body.paymentMethods.some((x) => x.key === 'card'),
+    'the method exists only where something can actually take it');
+});
+
+test('cash never travels through Stripe, and settles on the spot', async () => {
+  // Money that moved outside the app is recorded, not charged. Routing it to
+  // a card rail would invent a fee and a charge that never happened.
+  const job = await bookAndInvoice();
+  const before = seen.length;
+  const r = await api('POST', `/api/v1/pro/invoices/${job.invoiceId}/paid`, { method: 'cash' });
+  assert.strictEqual(r.status, 200, r.raw);
+  assert.strictEqual(r.body.invoice, 'paid', 'settled on the spot, as it really was');
+  assert.ok(r.body.receipt, 'and the receipt is issued there and then');
+  assert.strictEqual(r.body.checkoutUrl, null, 'nowhere to send anyone');
+  assert.strictEqual(seen.length, before, 'Stripe was not called');
+});
+
+test('a card payment is refused while the foxxer cannot be paid', async () => {
+  const a = accounts.get(accountId);
+  a.configuration.merchant.capabilities.card_payments.status = 'restricted';
+  await api('GET', '/api/v1/pro/payouts');
+
+  const job = await bookAndInvoice();
+  const r = await api('POST', `/api/v1/pro/invoices/${job.invoiceId}/paid`, { method: 'card' });
+  assert.strictEqual(r.status, 400, r.raw);
+  assert.strictEqual(r.body.code, 'payouts_not_ready');
+  assert.match(r.body.error, /payouts/i, 'and it says why, in words a tradesperson can act on');
+  assert.match(r.body.error, /cash|transfer/i, 'and what still works meanwhile');
+
+  makeReady(a);
+  await api('GET', '/api/v1/pro/payouts');
+});
+
+let cardJob;
+
+test('a card payment produces a Stripe-hosted checkout, and does not mark it paid', async () => {
+  cardJob = await bookAndInvoice();
+  const r = await api('POST', `/api/v1/pro/invoices/${cardJob.invoiceId}/paid`, { method: 'card' });
+  assert.strictEqual(r.status, 200, r.raw);
+  assert.match(r.body.checkoutUrl, /^https:\/\/checkout\.stripe\.test\//,
+    'the customer goes to Stripe, not to a card form on our page');
+  assert.strictEqual(r.body.invoice, 'issued', 'still unpaid — nobody has paid anything yet');
+  assert.strictEqual(r.body.receipt, null, 'and no receipt for money that has not moved');
+  assert.strictEqual(r.body.settled, false);
+
+  const sess = lastSession();
+  assert.ok(sess, 'a checkout session was created');
+  // A destination charge: the money is routed to the foxxer as it is taken,
+  // so the platform never holds it.
+  assert.strictEqual(sess.body['payment_intent_data[transfer_data][destination]'], accountId);
+  assert.strictEqual(sess.body['payment_intent_data[on_behalf_of]'], accountId);
+  assert.strictEqual(sess.body['line_items[0][price_data][currency]'], 'eur');
+  /*
+   * €168.30, not the €180 the service costs: net 180, VAT at 13.5% on top,
+   * less the 20% RCT the principal withholds at source. The customer is
+   * charged what is actually payable — billing the pre-withholding figure
+   * would overcharge them by the exact amount somebody else remits to
+   * Revenue on their behalf.
+   */
+  assert.strictEqual(sess.body['line_items[0][price_data][unit_amount]'], '16830');
+  // No fee is configured on this instance, so nothing may be deducted.
+  assert.strictEqual(sess.body['payment_intent_data[application_fee_amount]'], undefined);
+});
+
+const lastSession = () => seen.filter((s) => s.url === '/v1/checkout/sessions').pop();
+
+const paidEvent = (sessionId) => ({
+  id: 'evt_paid', type: 'checkout.session.completed',
+  data: { object: { id: sessionId, object: 'checkout.session', payment_status: 'paid' } },
+});
+
+test('the invoice is paid when Stripe says so, and only then', async () => {
+  const inv = (await api('GET', '/api/v1/pro/invoices')).body.invoices.find((i) => i.id === cardJob.invoiceId);
+  assert.strictEqual(inv.status, 'issued', 'still unpaid before the webhook');
+
+  const w = await webhook(paidEvent(lastSession().responseId));
+  assert.strictEqual(w.status, 200, w.raw);
+  assert.strictEqual(w.body.matched, true);
+
+  const after = (await api('GET', '/api/v1/pro/invoices')).body.invoices.find((i) => i.id === cardJob.invoiceId);
+  assert.strictEqual(after.status, 'paid');
+
+  const job = await jobView(cardJob);
+  assert.ok(job.body.receipt, `and the receipt exists now that the money has moved: ${job.raw}`);
+  assert.strictEqual(job.body.receipt.settled, true);
+});
+
+test('a redelivered webhook does not issue a second receipt', async () => {
+  const before = (await jobView(cardJob)).body.receipt.number;
+  const count = (await jobView(cardJob)).body.invoices.length;
+
+  const again = await webhook(paidEvent(lastSession().responseId));
+  assert.strictEqual(again.status, 200, again.raw);
+
+  const job = (await jobView(cardJob)).body;
+  assert.strictEqual(job.receipt.number, before, 'the same receipt, not a second one');
+  assert.strictEqual(job.invoices.length, count);
+});
+
+test('a checkout session nobody here started is acknowledged and ignored', async () => {
+  const w = await webhook(paidEvent('cs_test_never_seen'));
+  assert.strictEqual(w.status, 200, w.raw);
+  assert.strictEqual(w.body.matched, false);
 });

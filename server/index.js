@@ -312,7 +312,7 @@ on('GET', '/api/v1/meta', async (req, res) => {
     withholding: { IE: withholdingRates('IE'), UK: withholdingRates('UK') },
     version: VERSION,
     deposit: { IE: pay.depositAmount('IE'), UK: pay.depositAmount('UK') },
-    paymentMethods: pay.METHODS,
+    paymentMethods: pay.availableMethods(),
     days: DAYS,
   });
 });
@@ -533,6 +533,27 @@ on('POST', '/api/v1/webhooks/stripe', async (req, res) => {
    * prefix because Stripe adds more as capabilities grow.
    */
   const type = String(event.type || '');
+
+  /*
+   * The customer finished a hosted checkout. This is the only thing that marks
+   * an invoice paid on a real rail — they may equally have closed the tab on
+   * the success page, and nothing in a browser is evidence either way.
+   */
+  if (type === 'checkout.session.completed' || type === 'checkout.session.async_payment_succeeded') {
+    const session = event.data?.object || {};
+    const payment = session.id ? store.find('payments', (p) => p.providerRef === session.id) : null;
+    if (!payment) {
+      store.log('webhook.unknown', String(session.id || ''), { event: type });
+      return H.json(res, 200, { ok: true, matched: false });
+    }
+    if (session.payment_status && session.payment_status !== 'paid') {
+      return H.json(res, 200, { ok: true, matched: true, ignored: session.payment_status });
+    }
+    const { invoice } = D.completePayment(store, payment.id);
+    store.log('webhook.applied', payment.id, { event: type, invoice: invoice.number });
+    return H.json(res, 200, { ok: true, matched: true });
+  }
+
   const watched = type.startsWith('v2.core.account')
     || type === 'account.updated' || type.startsWith('capability.') || type.startsWith('person.');
   if (!watched) return H.json(res, 200, { ok: true, ignored: type });
@@ -1004,9 +1025,22 @@ on('POST', '/api/v1/pro/invoices/:id/paid', async (req, res, p) => {
   const inv = store.get('invoices', p.id);
   if (!inv || inv.proId !== pro.id) return H.fail(req, res, 404, 'No such invoice', 'not_found');
   const body = await H.readJson(req);
-  const { invoice, payment, receipt } = await D.settleInvoice(store, inv.id, {
-    method: body.method || 'transfer',
-    amount: body.amount,
+  const method = body.method || 'transfer';
+
+  /*
+   * Refuse to raise a card payment the foxxer cannot be paid from. Stripe
+   * would refuse it too, but a page further on and in its own words — and a
+   * charge that succeeds into an account that cannot pay out is worse than
+   * one that never starts.
+   */
+  if (pay.isOnline(method) && !payoutsView(pro).canBePaid) {
+    return H.fail(req, res, 400,
+      'Set up payouts before taking a card payment — Stripe needs to know where the money goes. Cash, a transfer or your own card reader still work.',
+      'payouts_not_ready');
+  }
+
+  const { invoice, payment, receipt, checkoutUrl } = await D.settleInvoice(store, inv.id, {
+    method, amount: body.amount,
   });
   H.json(res, 200, {
     ok: true,
@@ -1015,6 +1049,9 @@ on('POST', '/api/v1/pro/invoices/:id/paid', async (req, res, p) => {
     method: payment.method,
     settled: !!payment.moved,
     receipt: receiptView(receipt),
+    // Present only when the customer has to go and pay: the money has not
+    // moved and this invoice is still owed until a webhook says otherwise.
+    checkoutUrl: checkoutUrl || null,
     customerLink: `/j/${invoice.ref}?t=${issueJobToken(invoice.ref)}`,
   });
 });
@@ -1080,21 +1117,30 @@ on('POST', '/api/v1/pro/chases/:invoiceId', async (req, res, p) => {
  */
 function payoutsView(pro) {
   const c = pro.payouts || null;
+  /*
+   * Being able to take a card and being able to receive the money are two
+   * different capabilities, and a destination charge needs both: the platform
+   * takes the payment, then routes it onward. Real Stripe refuses the charge
+   * with `insufficient_capabilities_for_transfer` when the second is missing,
+   * so checking only the first sends a foxxer to a failure at the till.
+   */
+  const canBePaid = !!(c?.chargesEnabled && c?.transfersEnabled);
   // On `manual` there is nothing to onboard to. Saying "not started" would put
   // a permanent red card in the Business tab of an instance taking no cards.
   const status = !connect ? 'not_required'
     : !pro.stripeAccountId ? 'not_started'
-    : (c && c.chargesEnabled && c.payoutsEnabled) ? 'ready' : 'incomplete';
+    : (canBePaid && c.payoutsEnabled) ? 'ready' : 'incomplete';
   return {
     provider: connect ? 'stripe' : 'manual',
     status,
     accountId: pro.stripeAccountId || null,
     chargesEnabled: !!c?.chargesEnabled,
     payoutsEnabled: !!c?.payoutsEnabled,
+    transfersEnabled: !!c?.transfersEnabled,
     detailsSubmitted: !!c?.detailsSubmitted,
     needs: c?.needs || [],
-    /* Phase 2 refuses to raise a payment when this is false. */
-    canBePaid: !!c?.chargesEnabled,
+    /* The invoice route refuses to raise a card payment when this is false. */
+    canBePaid,
     checkedAt: c?.checkedAt || null,
   };
 }
@@ -1103,6 +1149,7 @@ function cachePayouts(pro, a) {
   return store.update('pros', pro.id, {
     payouts: {
       chargesEnabled: !!a.chargesEnabled, payoutsEnabled: !!a.payoutsEnabled,
+      transfersEnabled: !!a.transfersEnabled,
       detailsSubmitted: !!a.detailsSubmitted, needs: a.needs || [],
       checkedAt: new Date().toISOString(),
     },

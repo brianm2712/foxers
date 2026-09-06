@@ -203,11 +203,60 @@ function create({ secretKey, base, publicUrl, feeBps = 0, feeFlat = 0 } = {}) {
       return { ref: pi.id, moved: true };
     },
 
-    /* The invoice. The foxxer is known, so it goes straight to them. */
-    charge: ({ amount, currency, reference, destination }) => intent({
-      amount, currency, captureMode: 'automatic', reference, destination,
-      description: `Foxxers — ${reference || 'job'}`,
-    }),
+    /* What this rail can actually take. Anything else moved somewhere else and
+     * is only being recorded — see `railFor` in payments.js. Deposits are
+     * absent until phase 3 can handle one that starts out pending. */
+    handles: ['card', 'apple_pay', 'google_pay'],
+
+    /*
+     * The invoice. The foxxer is known, so it is a destination charge that
+     * routes to them as it is taken and the platform fee comes off
+     * automatically.
+     *
+     * A Stripe-HOSTED checkout page, not a card form on our own pages. That is
+     * the decision the footer forces: seamless in-app entry means loading
+     * js.stripe.com, which is a third-party request that also fingerprints.
+     * One redirect out costs a little polish and keeps the promise.
+     */
+    async charge({ amount, currency, reference, destination, ref }) {
+      const fee = destination ? platformFee(amount) : 0;
+      const back = site && ref ? `${site}/j/${encodeURIComponent(ref)}` : undefined;
+      const session = await call('POST', '/v1/checkout/sessions', {
+        mode: 'payment',
+        line_items: [{
+          quantity: 1,
+          price_data: {
+            currency: String(currency).toLowerCase(),
+            unit_amount: toMinor(amount),
+            product_data: { name: `Invoice ${reference || ''}`.trim() },
+          },
+        }],
+        payment_intent_data: {
+          description: `Foxxers — ${reference || 'job'}`,
+          ...(destination ? { transfer_data: { destination }, on_behalf_of: destination } : {}),
+          ...(fee > 0 ? { application_fee_amount: fee } : {}),
+        },
+        client_reference_id: ref || undefined,
+        success_url: back && `${back}?paid=1`,
+        cancel_url: back,
+        // How the webhook finds the payment this session belongs to. The
+        // session id is not known to us until after it is created.
+        metadata: { foxxers_ref: ref || '', foxxers_payment: reference || '' },
+      }, { idempotencyKey: reference ? `cs_${reference}` : undefined });
+
+      return {
+        ref: session.id,
+        paymentIntent: session.payment_intent || null,
+        checkoutUrl: session.url,
+        // Nobody has paid anything yet. A customer arriving back on the
+        // success page is not evidence; only the webhook is.
+        state: 'pending',
+        amount, currency: String(currency).toUpperCase(),
+        destination: destination || null,
+        fee,
+        moved: false,
+      };
+    },
 
     /* ---- connected accounts ------------------------------------------- */
 
