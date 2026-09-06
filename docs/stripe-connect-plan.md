@@ -233,6 +233,18 @@ falls back to expiring if a cancel is refused for this reason — the app can
 believe a deposit is held, because a webhook said so, while Stripe still
 considers the session open. `tests/stripe-adapter.test.js` pins all four paths.
 
+**An idempotency key must be globally unique, and an invoice number is not.**
+The checker passed constant stand-in payment ids, so a second run reused a key
+against a different PaymentIntent and Stripe refused — correctly, and in a way
+that made every money step fail on the second attempt while the first had
+worked. Fixing the checker exposed the same shape of bug in the app, and a
+worse one: `session()` keyed on `invoice.number`, which is
+`<initials>-<year>-<seq>` where the initials come from the business name. Two
+foxxers — "Byrne Electrical" and "Best Electrics" — both issue BE-2026-0001.
+The second customer to pay would have hit "same key, different parameters" and
+simply been unable to pay, for a reason nobody could act on. Keyed on
+`invoice.id` now, and pinned in `tests/connect.test.js`.
+
 **A destination charge to a fresh account is refused, and should be.** Stripe
 asked for `configurations.recipient.capabilities.stripe_balance.stripe_transfers`
 by name — the exact capability the account is created requesting, so the request

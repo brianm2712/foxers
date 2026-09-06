@@ -313,8 +313,15 @@ async function run(opts = {}) {
       : await intentFrom(opts.session, opts.intent);
     if (found.skip) return found;
     captureIntent = found.intent;
+    /*
+     * The id is what the adapter builds its idempotency key from, and in the
+     * app it is a unique payment row. Here it has to be derived from the
+     * intent: a constant stand-in means a second run reuses a key against a
+     * different PaymentIntent, which Stripe refuses — so the first run works
+     * and every one after it fails.
+     */
     const captured = await api.capture({
-      payment: { id: 'check', paymentIntentRef: captureIntent, amount: DEPOSIT, currency: EUR },
+      payment: { id: `cap-${captureIntent}`, paymentIntentRef: captureIntent, amount: DEPOSIT, currency: EUR },
     });
     return `captured ${captured.ref}`;
   });
@@ -323,7 +330,7 @@ async function run(opts = {}) {
     if (!captureIntent) return { skip: needsIntent };
     if (!accountId) return { skip: 'no account to transfer to' };
     const moved = await api.capture({
-      payment: { id: 'check-tr', paymentIntentRef: captureIntent, amount: DEPOSIT, currency: EUR },
+      payment: { id: `tr-${captureIntent}`, paymentIntentRef: captureIntent, amount: DEPOSIT, currency: EUR },
       destination: accountId,
     });
     return moved.transferRef
@@ -341,7 +348,8 @@ async function run(opts = {}) {
       return { skip: `${found.skip} — this needs a SECOND, uncaptured hold (--cancel-session=cs_…)` };
     }
     const released = await api.refund({
-      payment: { id: 'check-cn', paymentIntentRef: found.intent, status: 'held', amount: DEPOSIT, currency: EUR },
+      payment: { id: `cn-${found.intent}`, paymentIntentRef: found.intent, status: 'held',
+        providerRef: opts.cancelSession || cancelSession, amount: DEPOSIT, currency: EUR },
     });
     return `cancelled ${released.ref}`;
   });

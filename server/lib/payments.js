@@ -293,6 +293,9 @@ async function takePayment(store, { invoice, pro, amount, method, providerName }
 
   const result = await provider.charge({
     amount: due, currency, method, reference: invoice.number,
+    // The invoice ID, not its number: numbers are sequential per foxxer and
+    // two of them can collide. See `session` in providers/stripe.js.
+    key: invoice.id,
     // A destination charge routes the money to the foxxer as it is taken, so
     // the platform never holds it. Absent on `manual`, which moves nothing.
     destination: pro.stripeAccountId || null,

@@ -76,7 +76,8 @@ test.before(async () => {
     const ctype = req.headers['content-type'] || '';
     const isJson = /application\/json/.test(ctype);
     const body = raw ? (isJson ? JSON.parse(raw) : Object.fromEntries(new URLSearchParams(raw))) : {};
-    seen.push({ method: req.method, url: req.url, body, isJson });
+    seen.push({ method: req.method, url: req.url, body, isJson,
+      idem: req.headers['idempotency-key'] || null });
 
     const bad = (status, message) => {
       res.writeHead(status, { 'content-type': 'application/json' });
@@ -618,6 +619,22 @@ test('a card payment produces a Stripe-hosted checkout, and does not mark it pai
    * is pinned here — a change to it should have to be made on purpose.
    */
   assert.strictEqual(sess.body['payment_intent_data[application_fee_amount]'], '337');
+
+  /*
+   * The idempotency key must be unique to this invoice, and an invoice NUMBER
+   * is not: it is `<initials>-<year>-<seq>`, and the initials come from the
+   * business name, so "Byrne Electrical" and "Best Electrics" both issue
+   * BE-2026-0001. Two foxxers' invoices sharing a key means the second
+   * customer to pay gets Stripe's "same key, different parameters" refusal and
+   * simply cannot pay, for a reason nobody could act on.
+   */
+  const inv = (await api('GET', '/api/v1/pro/invoices')).body.invoices
+    .find((i) => i.id === cardJob.invoiceId);
+  assert.ok(sess.idem, 'the session was sent with an idempotency key');
+  assert.ok(sess.idem.includes(cardJob.invoiceId),
+    `the key is tied to the invoice id, not its number (got ${sess.idem})`);
+  assert.ok(!sess.idem.includes(inv.number),
+    'and specifically not to the number, which two foxxers can share');
 });
 
 const lastSession = () => seen.filter((s) => s.url === '/v1/checkout/sessions').pop();

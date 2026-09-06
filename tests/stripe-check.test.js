@@ -44,7 +44,8 @@ test.before(async () => {
     const isJson = /application\/json/.test(req.headers['content-type'] || '');
     const body = raw ? (isJson ? JSON.parse(raw) : Object.fromEntries(new URLSearchParams(raw))) : {};
     const [pathname] = req.url.split('?');
-    seen.push({ method: req.method, pathname, body, isJson });
+    seen.push({ method: req.method, pathname, body, isJson,
+      idem: req.headers['idempotency-key'] || null });
 
     const bad = (status, message) => {
       res.writeHead(status, { 'content-type': 'application/json' });
@@ -321,6 +322,34 @@ test('waiting gives up rather than hanging, and says what it was waiting for', a
   assert.strictEqual(capture.status, 'skip');
   assert.match(capture.reason, /not completed|timed out|gave up|still open/i);
   assert.strictEqual(report.failed, 0, 'nobody paying is not a failure');
+});
+
+/*
+ * Idempotency keys are built from the payment id, which in the app is unique
+ * per payment row. The checker has no payment rows, and constant stand-ins
+ * meant a second run reused a key against a different PaymentIntent — which
+ * real Stripe refuses, correctly, and which made every money step fail on the
+ * second attempt while the first had worked.
+ */
+test('two runs do not reuse an idempotency key on different intents', async () => {
+  accountsReady = true;
+  seen.length = 0;
+
+  await run({ secretKey: KEY, base, quiet: true,
+    session: 'cs_test_done_one', cancelSession: 'cs_test_done_two' });
+  await run({ secretKey: KEY, base, quiet: true,
+    session: 'cs_test_done_three', cancelSession: 'cs_test_done_four' });
+
+  const byPath = new Map();
+  for (const call of seen) {
+    if (!/\/(capture|cancel)$/.test(call.pathname) || !call.idem) continue;
+    // The same key must never appear on two different endpoints.
+    const already = byPath.get(call.idem);
+    assert.ok(!already || already === call.pathname,
+      `idempotency key ${call.idem} reused on ${already} and ${call.pathname}`);
+    byPath.set(call.idem, call.pathname);
+  }
+  assert.ok(byPath.size >= 4, 'both runs really did capture and cancel');
 });
 
 test('a step that fails is reported as failed, and sinks the run', async () => {

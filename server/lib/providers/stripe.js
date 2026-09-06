@@ -42,10 +42,13 @@
  * moved this file to Accounts v2 and taught the webhook handler to take both
  * event families.
  *
- * The MONEY paths have not. No charge, capture, cancel or transfer has ever
- * been made against Stripe; they are exercised only against a mock that
- * refuses what the real one refuses. Treat them as unproven until Phase 4's
- * test-mode run.
+ * The MONEY paths are partly there. Deposit holds have been authorised for
+ * real, through hosted checkout, and a capture has been sent and accepted.
+ * A destination charge, a transfer and a cancel have NOT yet completed against
+ * Stripe — the account they route to is not onboarded, and the runs that
+ * reached them died on the two bugs recorded in docs/stripe-connect-plan.md.
+ * Treat those three as unproven until `scripts/stripe-check.js` says the run
+ * is complete.
  */
 
 const crypto = require('crypto');
@@ -187,7 +190,7 @@ function create({ secretKey, base, publicUrl, feeBps = DEFAULT_FEE_BPS, feeFlat 
    * the same page, and the money is held instead of taken.
    */
   async function session({
-    amount, currency, reference, destination, ref, name, description, captureMode,
+    amount, currency, reference, destination, ref, name, description, captureMode, key,
   }) {
     const fee = destination ? platformFee(amount) : 0;
     const back = site && ref ? `${site}/j/${encodeURIComponent(ref)}` : undefined;
@@ -224,7 +227,15 @@ function create({ secretKey, base, publicUrl, feeBps = DEFAULT_FEE_BPS, feeFlat 
       // How the webhook finds the payment this session belongs to. The session
       // id is not known to us until after it is created.
       metadata: { foxxers_ref: ref || '', foxxers_payment: reference || '' },
-    }, { idempotencyKey: reference ? `cs_${reference}` : undefined });
+      /*
+       * Keyed on something GLOBALLY unique, which an invoice number is not:
+       * it is `<initials>-<year>-<seq>`, and the initials come from the
+       * business name, so "Byrne Electrical" and "Best Electrics" both issue
+       * BE-2026-0001. Sharing a key across two foxxers' invoices earns
+       * Stripe's "same key, different parameters" refusal, and the second
+       * customer to pay simply cannot, for a reason nobody could act on.
+       */
+    }, { idempotencyKey: key ? `cs_${key}` : undefined });
 
     return {
       ref: cs.id,
@@ -255,8 +266,10 @@ function create({ secretKey, base, publicUrl, feeBps = DEFAULT_FEE_BPS, feeFlat 
      * if it is accepted — so on the happy path no money moves and nobody pays
      * a fee for it.
      */
-    hold: ({ amount, currency, reference, ref }) => session({
+    hold: ({ amount, currency, reference, ref, key }) => session({
       amount, currency, reference, ref, captureMode: 'manual',
+      // The job reference: minted fresh per request and never reused.
+      key: key || ref || reference,
       name: 'Foxxers request deposit',
       description: 'Foxxers deposit — released if you go ahead with the quote',
     }),
@@ -330,8 +343,8 @@ function create({ secretKey, base, publicUrl, feeBps = DEFAULT_FEE_BPS, feeFlat 
      * routes to them as it is taken and the platform fee comes off
      * automatically. Captured on completion, unlike a deposit.
      */
-    charge: ({ amount, currency, reference, destination, ref }) => session({
-      amount, currency, reference, destination, ref,
+    charge: ({ amount, currency, reference, destination, ref, key }) => session({
+      amount, currency, reference, destination, ref, key,
       name: `Invoice ${reference || ''}`.trim(),
       description: `Foxxers — ${reference || 'job'}`,
     }),
