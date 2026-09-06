@@ -168,8 +168,47 @@ approve the platform.
   customer-to-foxxer. **Keep it**: it is the right shape if Foxxers ever bills
   tradespeople directly, outside the app stores.
 
-**Nothing has ever spoken to Stripe.** It needs a test-mode key and one real
-round trip before it goes near a card.
+## What the first real round trip found  (2026-09-06)
+
+The adapter has now spoken to Stripe once, against a test sandbox. It got
+further than expected and then hit one thing no mock could have produced.
+
+Confirmed working against the real API:
+
+- the pinned `Stripe-Version: 2024-06-20` is accepted
+- authentication, form encoding and error parsing are all correct — a 400 from
+  Stripe surfaced as a clean `provider_error`, not a crash
+- `GET /api/v1/pro/payouts` returns `not_started` correctly
+- the CLI webhook listener forwards to `/api/v1/webhooks/stripe`
+
+**The blocker: `POST /v1/accounts` is the wrong endpoint for a new integration.**
+
+> Stripe no longer recommends Accounts v1 for new Connect integrations. Create
+> connected accounts with `POST /v2/core/accounts` instead.
+
+`createAccount` and `accountLink` in `providers/stripe.js` are written against
+Accounts v1. Stripe still serves v1, and an account can opt back into it at
+`dashboard.stripe.com/settings/features/feat_accounts_v1_support` — but this is
+a new integration, which is exactly the case Stripe is steering off v1.
+
+So there is a decision here, and it is not merely cosmetic:
+
+- **Toggle v1 back on.** Nothing to rewrite. Ships on an endpoint Stripe has
+  already started moving people off, which is a poor foundation for something
+  that is meant to handle tradespeople's money for years.
+- **Migrate to Accounts v2.** `POST /v2/core/accounts`, a different account
+  shape, and the onboarding-link call almost certainly changes with it. Its own
+  piece of work, with its own tests.
+
+Worth knowing before deciding: **a lesson from this round trip is that listing
+connected accounts succeeds even when account *creation* is not available.**
+`GET /v1/accounts` returned a clean empty list on an account that had never
+signed up for Connect at all, which read as "Connect is enabled" and was wrong.
+Do not use a read to prove a write will work.
+
+**Nothing beyond account creation has been exercised.** The onboarding link,
+the account-status read and a real `account.updated` signature are all still
+unverified, because the flow stops at the first call.
 
 ## What this does not cover
 
