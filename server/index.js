@@ -26,6 +26,7 @@ const { vatClasses, withholdingRates } = require('./lib/tax');
 const pay = require('./lib/payments');
 const { VERSION, API_VERSION } = require('./version');
 const revolut = require('./lib/providers/revolut');
+const stripe = require('./lib/providers/stripe');
 
 /*
  * Which rail moves the money. Nothing but `manual` unless the environment
@@ -34,10 +35,19 @@ const revolut = require('./lib/providers/revolut');
  * fails loudly at boot rather than at the first payment.
  */
 const PAYMENTS = process.env.FOXXERS_PAYMENTS || 'manual';
+/* Held separately from the payments registry: Connect has account routes that
+ * are nothing to do with taking money, and only Stripe has them. */
+let connect = null;
 if (PAYMENTS === 'revolut') {
   pay.registerProvider(revolut.create());
   console.log('[foxxers] payments: revolut (%s)',
     process.env.FOXXERS_REVOLUT_LIVE === '1' ? 'LIVE' : 'sandbox');
+} else if (PAYMENTS === 'stripe') {
+  connect = stripe.create();
+  pay.registerProvider(connect);
+  // The key says which it is. Nothing to configure, nothing to get wrong.
+  console.log('[foxxers] payments: stripe Connect (%s)',
+    /^sk_live/.test(process.env.FOXXERS_STRIPE_SECRET_KEY || '') ? 'LIVE' : 'test');
 } else if (PAYMENTS !== 'manual') {
   throw new Error(`Unknown FOXXERS_PAYMENTS: ${PAYMENTS}`);
 }
@@ -478,6 +488,48 @@ on('POST', '/api/v1/webhooks/revolut', async (req, res) => {
   H.json(res, 200, { ok: true, matched: true });
 });
 
+/*
+ * Stripe. Phase 1 carries one event: a connected account changed, so what we
+ * believe about whether a foxxer can be paid has to change with it. Onboarding
+ * finishes on Stripe's pages, where this app never sees the customer come
+ * back, so the webhook is the only thing that learns it promptly.
+ */
+on('POST', '/api/v1/webhooks/stripe', async (req, res) => {
+  const secret = process.env.FOXXERS_STRIPE_WEBHOOK_SECRET;
+  if (!secret) return H.fail(req, res, 404, 'No such endpoint', 'not_found');
+
+  const raw = (await H.readBody(req)).toString('utf8');
+  const ok = stripe.verifyWebhook({
+    secret,
+    signatureHeader: req.headers['stripe-signature'],
+    rawBody: raw,
+  });
+  if (!ok) {
+    store.log('webhook.rejected', 'stripe', { ip: H.clientIp(req) });
+    return H.fail(req, res, 401, 'Bad signature', 'bad_signature');
+  }
+
+  let event;
+  try { event = JSON.parse(raw); } catch { return H.fail(req, res, 400, 'Not JSON', 'bad_request'); }
+  if (event.type !== 'account.updated') return H.json(res, 200, { ok: true, ignored: event.type });
+
+  const a = event.data?.object || {};
+  const pro = a.id ? store.find('pros', (p) => p.stripeAccountId === a.id) : null;
+  // An account we do not know about is not worth retrying — say so, or Stripe
+  // redelivers it for days.
+  if (!pro) {
+    store.log('webhook.unknown', String(a.id || ''), { event: event.type });
+    return H.json(res, 200, { ok: true, matched: false });
+  }
+
+  cachePayouts(pro, {
+    chargesEnabled: a.charges_enabled, payoutsEnabled: a.payouts_enabled,
+    detailsSubmitted: a.details_submitted, needs: a.requirements?.currently_due || [],
+  });
+  store.log('webhook.applied', pro.id, { event: event.type, charges: !!a.charges_enabled });
+  H.json(res, 200, { ok: true, matched: true });
+});
+
 /* ---- customer auth --------------------------------------------------- */
 
 on('POST', '/api/v1/auth/customer/signup', async (req, res) => {
@@ -696,6 +748,9 @@ function setupState(pro, bookings, invoices) {
     hoursConfirmed: !!(av && av.confirmedAt),
     taxReady: !!(pro.vatRegistered ? pro.vatNumber : true) && !!pro.invoicePrefix,
     published: !!pro.published,
+    /* The one step that cannot be finished inside this app. Read from the
+     * cache, never from Stripe: this is the first screen of every session. */
+    payouts: payoutsView(pro).status,
     slug: pro.slug,
   };
 }
@@ -983,6 +1038,87 @@ on('POST', '/api/v1/pro/chases/:invoiceId', async (req, res, p) => {
   if (!inv || inv.proId !== pro.id) return H.fail(req, res, 404, 'No such invoice', 'not_found');
   const body = await H.readJson(req);
   H.json(res, 200, { ok: true, chases: (D.recordChase(store, inv.id, String(body.key), body.channel).chases || []).length });
+});
+
+/* ---- payouts --------------------------------------------------------- */
+
+/*
+ * Whether this foxxer can be paid through the app.
+ *
+ * A foxxer who has not onboarded is NOT hidden and NOT blocked. They appear in
+ * search, take requests and quote like anyone else — putting ID and a bank
+ * account between signing up and getting any value is how a marketplace never
+ * reaches its first hundred trades. What they get instead is a loud card in
+ * the Business tab, and the honest answer here.
+ *
+ * The cache exists so a page can render without a round trip to Stripe. It is
+ * only ever written from something Stripe said — a `GET` on the account, or an
+ * `account.updated` webhook. Nothing in the browser can move it.
+ */
+function payoutsView(pro) {
+  const c = pro.payouts || null;
+  // On `manual` there is nothing to onboard to. Saying "not started" would put
+  // a permanent red card in the Business tab of an instance taking no cards.
+  const status = !connect ? 'not_required'
+    : !pro.stripeAccountId ? 'not_started'
+    : (c && c.chargesEnabled && c.payoutsEnabled) ? 'ready' : 'incomplete';
+  return {
+    provider: connect ? 'stripe' : 'manual',
+    status,
+    accountId: pro.stripeAccountId || null,
+    chargesEnabled: !!c?.chargesEnabled,
+    payoutsEnabled: !!c?.payoutsEnabled,
+    detailsSubmitted: !!c?.detailsSubmitted,
+    needs: c?.needs || [],
+    /* Phase 2 refuses to raise a payment when this is false. */
+    canBePaid: !!c?.chargesEnabled,
+    checkedAt: c?.checkedAt || null,
+  };
+}
+
+function cachePayouts(pro, a) {
+  return store.update('pros', pro.id, {
+    payouts: {
+      chargesEnabled: !!a.chargesEnabled, payoutsEnabled: !!a.payoutsEnabled,
+      detailsSubmitted: !!a.detailsSubmitted, needs: a.needs || [],
+      checkedAt: new Date().toISOString(),
+    },
+  });
+}
+
+/* Ask Stripe rather than trusting the cache: onboarding finishes on Stripe's
+ * own pages, and the webhook that says so can be late or lost. */
+async function refreshPayouts(pro) {
+  if (!connect || !pro.stripeAccountId) return pro;
+  return cachePayouts(pro, await connect.account({ accountId: pro.stripeAccountId }));
+}
+
+on('GET', '/api/v1/pro/payouts', async (req, res) => {
+  const pro = requirePro(req, res); if (!pro) return;
+  H.json(res, 200, payoutsView(await refreshPayouts(pro)));
+});
+
+/*
+ * Start, or resume, onboarding. The account is created once and kept: a second
+ * one would split a foxxer's money across two Stripe accounts and orphan the
+ * first. Links, unlike accounts, are single-use and short-lived, so every call
+ * mints a fresh one.
+ */
+on('POST', '/api/v1/pro/payouts/onboard', async (req, res) => {
+  const pro = requirePro(req, res); if (!pro) return;
+  if (!connect) return H.fail(req, res, 400, 'This instance does not take card payments', 'no_provider');
+
+  let current = pro;
+  if (!current.stripeAccountId) {
+    const acct = await connect.createAccount({
+      email: pro.email, business: pro.business, country: pro.region === 'UK' ? 'GB' : 'IE',
+    });
+    current = store.update('pros', pro.id, { stripeAccountId: acct.id });
+    store.log('payouts.account.created', pro.id, { account: acct.id });
+  }
+  const link = await connect.accountLink({ accountId: current.stripeAccountId });
+  current = await refreshPayouts(current);
+  H.json(res, 200, { ...payoutsView(current), url: link.url, expiresAt: link.expiresAt });
 });
 
 on('PUT', '/api/v1/pro/profile', async (req, res) => {

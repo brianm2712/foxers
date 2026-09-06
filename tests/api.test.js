@@ -690,6 +690,10 @@ test('a brand new foxxer is told what stands between them and being bookable', a
   }, { token: t });
   d = (await api('GET', '/api/v1/pro/dashboard', undefined, { token: t })).body;
   assert.strictEqual(d.setup.fresh, false, 'and now the money screen is the useful one');
+
+  // Nothing to onboard to on `manual`, so the guide must not carry a step
+  // nobody can ever finish.
+  assert.strictEqual(d.setup.payouts, 'not_required');
 });
 
 test('a wrong address gets the app and a 404, not two words of plain text', async () => {
@@ -713,4 +717,21 @@ test('a payment webhook is the only thing that can move money, and it must be si
   // so an instance with no payment provider cannot be poked at.
   const off = await api('POST', '/api/v1/webhooks/revolut', { state: 'completed' }, { token: null });
   assert.strictEqual(off.status, 404, 'no secret, no endpoint');
+
+  const stripeOff = await api('POST', '/api/v1/webhooks/stripe', { type: 'account.updated' }, { token: null });
+  assert.strictEqual(stripeOff.status, 404, 'and the same for Stripe');
+});
+
+test('an instance taking no cards does not nag a foxxer to onboard', async () => {
+  // On `manual` there is nothing to onboard to, so "not started" would be a
+  // lie that puts a permanent red card in the Business tab of every demo.
+  const r = await api('GET', '/api/v1/pro/payouts');
+  assert.strictEqual(r.status, 200, r.raw);
+  assert.strictEqual(r.body.provider, 'manual');
+  assert.strictEqual(r.body.status, 'not_required');
+  assert.strictEqual(r.body.canBePaid, false);
+
+  const o = await api('POST', '/api/v1/pro/payouts/onboard');
+  assert.strictEqual(o.status, 400, o.raw);
+  assert.strictEqual(o.body.code, 'no_provider');
 });

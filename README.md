@@ -60,7 +60,8 @@ The foxxer sign-in page lists the demo logins, but only when the hostname is loc
 ### Tests
 
 ```sh
-node tests/api.test.js       # 40 — end-to-end over real HTTP
+node tests/api.test.js       # 41 — end-to-end over real HTTP
+node tests/connect.test.js   # 10 — Stripe Connect onboarding, against a strict mock
 node tests/revolut.test.js   #  8 — the Revolut adapter against a strict mock
 node tests/webhook.test.js   #  5 — webhook signatures, on a real server
 node tests/schedule.test.js  #  7 — slot generation, DST, busy-time subtraction
@@ -195,7 +196,7 @@ someone they will meet again.
 
 ## Payments
 
-`server/lib/payments.js` defines the contract; a provider is four methods. Two exist.
+`server/lib/payments.js` defines the contract; a provider is four methods. Three exist.
 
 **`manual` is the default.** It records what *would* have happened and sets
 `moved: false`, and the UI says so plainly on the deposit card and on the receipt. No
@@ -243,9 +244,41 @@ Money crosses to Revolut in **integer minor units** — €5.00 goes over the wi
 and every crossing goes through `toMinor`/`fromMinor`. Getting that wrong by a factor of
 a hundred is the quiet way to lose a lot of money.
 
-Adding another rail (**SumUp** for the RFID reader, **Stripe** for Apple Pay and
-Terminal) is one more file in `server/lib/providers/` with the same four methods.
-Nothing above `payments.js` changes.
+Adding another rail (**SumUp** for the RFID reader) is one more file in
+`server/lib/providers/` with the same four methods. Nothing above `payments.js`
+changes.
+
+### `stripe` — the marketplace rail, and where customer money is meant to go
+
+Revolut is single-merchant: every customer payment lands in one account, which for a
+marketplace means the platform holding money it owes to tradespeople — in the EU,
+regulated activity under PSD2. **Stripe Connect** gives each foxxer their own account,
+so funds settle to them and the platform takes a stated fee without ever holding
+anything. `docs/stripe-connect-plan.md` has the full scope.
+
+**Phase 1 — onboarding — is built.** No money moves; a foxxer gets a Stripe Express
+account and the app learns whether they can be paid.
+
+```sh
+FOXXERS_PAYMENTS=stripe
+FOXXERS_STRIPE_SECRET_KEY=sk_test_...       # sk_live_ switches it to live, nothing else to set
+FOXXERS_STRIPE_WEBHOOK_SECRET=whsec_...     # signing secret for the webhook
+FOXXERS_PUBLIC_URL=https://foxxers.com      # where Stripe returns them to
+FOXXERS_PLATFORM_FEE_BPS=0                  # the platform's cut. Zero until decided
+FOXXERS_PLATFORM_FEE_CENTS=0
+```
+
+Point the Stripe webhook at `POST /api/v1/webhooks/stripe`.
+
+**A foxxer who has not onboarded is not hidden and not blocked.** They appear in search,
+take requests and quote like anyone else — they simply cannot be paid *through the app*
+yet, and the Business tab says so in amber rather than red. Putting ID and a bank
+account between signing up and getting any value is how a marketplace never reaches its
+first hundred trades. Cash, transfer and their own card reader are unaffected.
+
+> **It has never made a request to Stripe either.** Same standing as the Revolut
+> adapter: written to the documented API, exercised against a strict mock, no
+> credentials on this machine. The API version is pinned in `stripe.js`.
 
 ---
 
@@ -324,6 +357,8 @@ each screen on each platform is built from these routes.
 | `GET /api/v1/pro/deposits` | Earned from declined quotes, credited to jobs that went ahead |
 | `GET /api/v1/pro/chases`, `POST /api/v1/pro/chases/:invoiceId` | |
 | `PUT /api/v1/pro/profile` | |
+| `GET /api/v1/pro/payouts` | Whether Stripe can pay them yet, and what it is still waiting on |
+| `POST /api/v1/pro/payouts/onboard` | A Stripe onboarding link. Creates the account the first time, never twice |
 
 ---
 
@@ -348,8 +383,13 @@ each screen on each platform is built from these routes.
 
 - **The iOS and iPadOS clients.** `ios/` is empty. The API above is the contract they are
   meant to be built against, and `web/public/js/api.js` is the file to mirror.
-- **A verified payment provider.** The Revolut adapter has never spoken to Revolut; it
-  needs a sandbox key and a run against the real API before it sees a card.
+- **A verified payment provider.** Neither adapter has ever spoken to its API. Both need
+  a sandbox key and a real round trip before either sees a card.
+- **Stripe Connect phases 2–4.** Onboarding is built. Taking an invoice as a destination
+  charge, authorising and capturing deposits, and going live are scoped in
+  `docs/stripe-connect-plan.md` — along with three decisions still open: the platform
+  fee, whether the €5 is charged or merely held, and what happens when a 7-day
+  authorisation lapses mid-quote.
 - **Photos on a request.** The field exists and is always empty.
 - **Refunding a deposit on a request nobody ever quoted.** The state and the transition
   exist; nothing schedules it.

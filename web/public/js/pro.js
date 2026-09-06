@@ -264,14 +264,34 @@ function setupGuide(setup) {
         : 'Your page is hidden from search at the moment.',
       href: `/pro/${setup.slug}`, cta: 'See your public page',
     },
-  ];
-  const left = steps.filter((s) => !s.done).length;
+    /* The only step that finishes somewhere other than here — Stripe wants ID
+     * and a bank account, and asks for them on its own pages. Left out
+     * entirely where there is nothing to onboard to, rather than sitting there
+     * permanently undone. */
+    setup.payouts && setup.payouts !== 'not_required' ? {
+      done: setup.payouts === 'ready',
+      title: 'Get paid',
+      body: {
+        ready: 'Card payments land in your account, minus the fees.',
+        incomplete: 'You started setting up payouts and Stripe is still waiting on something. Until it is done, you can still quote and work — you just cannot be paid through the app.',
+        not_started: 'Nothing stops you quoting and working today. But card payments need Stripe to check who you are and where your money goes, and that takes a few minutes with your ID and an IBAN.',
+      }[setup.payouts],
+      href: '/dash/profile', cta: setup.payouts === 'ready' ? 'Payout settings' : 'Set up payouts',
+      /* Being payable is not a condition of being found or booked — saying so
+       * in the count would contradict the card and the product. */
+      gating: false,
+    } : null,
+  ].filter(Boolean);
+  const blocking = steps.filter((s) => !s.done && s.gating !== false).length;
+  const payLeft = steps.some((s) => !s.done && s.gating === false);
 
   return el('div', {},
     el('div', { class: 'notice info' },
-      left
-        ? el('strong', {}, `${left} thing${left === 1 ? '' : 's'} to do before customers can find and book you.`)
-        : el('strong', {}, 'You are set up. Nothing to do but wait for the first job.')),
+      blocking
+        ? el('strong', {}, `${blocking} thing${blocking === 1 ? '' : 's'} to do before customers can find and book you.`)
+        : payLeft
+          ? el('strong', {}, 'Customers can find and book you. One thing left: getting paid.')
+          : el('strong', {}, 'You are set up. Nothing to do but wait for the first job.')),
     el('div', { class: 'setup-grid' }, steps.map((s) => el('div', { class: `card setup-step${s.done ? ' done' : ''}` },
       el('div', { class: 'row between' },
         el('h3', { style: 'margin:0' }, s.title),
@@ -1028,6 +1048,26 @@ export async function hours(mount, ctx) {
 
 /* ---- the business ----------------------------------------------------- */
 
+/*
+ * Stripe names what it is still missing in its own vocabulary —
+ * `individual.id_number`, `external_account`. Printed raw that reads like a
+ * fault in the app rather than a thing the foxxer has to go and do. Anything
+ * unrecognised falls back to the key with the punctuation taken out, which is
+ * still worse than a sentence but better than a stack-trace-shaped string.
+ */
+const NEED_NAMES = {
+  'external_account': 'your bank account',
+  'individual.id_number': 'your PPS or National Insurance number',
+  'individual.verification.document': 'photo ID',
+  'individual.verification.additional_document': 'a second document',
+  'individual.address.line1': 'your address',
+  'individual.dob.day': 'your date of birth',
+  'business_profile.url': 'a website or social page',
+  'business_profile.mcc': 'what kind of work you do',
+  'tos_acceptance.date': 'accepting Stripe’s terms',
+};
+const needName = (k) => NEED_NAMES[k] || String(k).split('.').pop().replace(/_/g, ' ');
+
 export async function settings(mount, ctx) {
   clear(mount).append(loading());
   const m = await meta();
@@ -1077,6 +1117,73 @@ export async function settings(mount, ctx) {
   });
 
   const saveBtn = el('button', { class: 'btn primary' }, 'Save');
+
+  /*
+   * Getting paid. Its own card, above everything else, because a foxxer who
+   * cannot be paid has a problem no other setting on this page fixes — and it
+   * is deliberately not a blocker: they can trade today and sort this out
+   * before the first invoice. Rendered from a live read, so finishing on
+   * Stripe's site and coming back shows the truth rather than a stale chip.
+   */
+  const payoutsCard = el('div', { class: 'card' }, loading());
+  const drawPayouts = async () => {
+    let s;
+    try {
+      s = await api.get('/api/v1/pro/payouts');
+    } catch {
+      // Stripe being unreachable is not the foxxer's problem to read a stack
+      // trace about, and it must not take the rest of the page down with it.
+      return put(clear(payoutsCard),
+        el('h3', {}, 'Getting paid'),
+        el('p', { class: 'muted' }, 'Could not check your payout setup just now. Nothing is wrong with your account — try again in a minute.'));
+    }
+    if (s.status === 'not_required') return payoutsCard.remove();
+
+    const said = {
+      not_started: {
+        chip: ['amber', 'not set up'],
+        body: 'You can quote and work today without this. But to take card payments through Foxxers, Stripe needs to check who you are and where the money goes — a few minutes, with photo ID and an IBAN. Your bank details go to Stripe, never to us.',
+        cta: 'Set up payouts',
+      },
+      incomplete: {
+        chip: ['amber', 'unfinished'],
+        body: 'Stripe still needs something before it can pay you.',
+        cta: 'Finish setting up',
+      },
+      ready: {
+        chip: ['good', 'ready'],
+        body: 'Card payments settle into your own Stripe account. Foxxers never holds your money.',
+        cta: 'Manage on Stripe',
+      },
+    }[s.status];
+
+    const go = el('button', { class: `btn ${s.status === 'ready' ? 'sm' : 'primary'}` }, said.cta);
+    go.addEventListener('click', async () => {
+      const done = busy(go, 'Opening Stripe…');
+      try {
+        const r = await api.post('/api/v1/pro/payouts/onboard', {});
+        // Single-use and short-lived, so it is followed now or not at all.
+        location.href = r.url;
+      } catch (err) {
+        done();
+        // Nothing was charged and nothing changed — the only thing that can
+        // have gone wrong here is that Stripe did not answer. "Something went
+        // wrong" beside a payments button reads like money is at stake.
+        fail(payoutsCard, [502, 504].includes(err.status)
+          ? new Error('Stripe did not answer just now. Nothing has changed — try again in a minute.')
+          : err);
+      }
+    });
+
+    put(clear(payoutsCard),
+      el('div', { class: 'row between' },
+        el('h3', { style: 'margin:0' }, 'Getting paid'),
+        el('span', { class: `chip ${said.chip[0]}` }, said.chip[1])),
+      el('p', { class: 'muted', style: 'margin:.6rem 0 .9rem' }, said.body),
+      s.needs.length ? el('p', { class: 'muted', style: 'margin:0 0 .9rem' },
+        'Stripe is waiting on: ', el('strong', {}, s.needs.map(needName).join(', '))) : null,
+      go);
+  };
 
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -1135,5 +1242,8 @@ export async function settings(mount, ctx) {
 
     el('div', { class: 'row', style: 'margin-top:1rem' }, saveBtn));
 
-  clear(mount).append(heading('Business', 'What customers see, and what the invoices are built from.'), form);
+  clear(mount).append(
+    heading('Business', 'What customers see, and what the invoices are built from.'),
+    payoutsCard, form);
+  drawPayouts();
 }
