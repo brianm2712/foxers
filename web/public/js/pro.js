@@ -9,7 +9,7 @@
 
 import { api, meta, session, login as doLogin, signup as doSignup, whoami } from './api.js';
 import {
-  el, frag, clear, money as fmtMoney, dateTime, dateOnly, relative,
+  el, frag, clear, put, money as fmtMoney, dateTime, dateOnly, relative,
   notice, loading, empty, field, input, select, values, statusChip,
   copyButton, whatsappLink, totalsBlock,
 } from './ui.js';
@@ -113,7 +113,7 @@ export async function signup(mount, ctx) {
 
   const btn = el('button', { class: 'btn primary block', type: 'submit' }, 'Create my page');
 
-  form.append(
+  put(form,
     el('div', { class: 'inline-fields' },
       field('Your name', input({ name: 'name', required: true, autocomplete: 'name' })),
       field('Business name', input({ name: 'business', autocomplete: 'organization' }, ), 'Leave blank to trade under your own name')),
@@ -498,7 +498,7 @@ export async function quoteBuilder(mount, ctx) {
       el('div', { class: 'card' }, totalsBlock(r.totals, region())));
   }
 
-  form.append(
+  put(form,
     request ? el('div', { class: 'card' },
       el('div', { class: 'row between' },
         el('h3', { style: 'margin:0' }, request.customer?.name || 'Customer'),
@@ -576,7 +576,7 @@ export async function quotes(mount, ctx) {
       } catch (err) { done(); fail(card, err); }
     });
 
-    card.append(
+    put(card,
       el('div', { class: 'row between' },
         el('div', {},
           el('h3', { style: 'margin:0' }, q.title),
@@ -648,7 +648,7 @@ function bookingCard(b, reload) {
     }, 'Message'));
   }
 
-  card.append(
+  put(card,
     el('div', { class: 'row between' },
       el('div', {},
         el('h3', { style: 'margin:0' }, b.service),
@@ -786,7 +786,7 @@ export async function services(mount, ctx) {
   const bookBox = input({ type: 'checkbox', id: 'bookable', checked: true });
   const addBtn = el('button', { class: 'btn primary', type: 'submit' }, 'Add this service');
 
-  addForm.append(
+  put(addForm,
     el('h3', {}, 'Add a service'),
     field('Name', nameIn),
     el('div', { class: 'inline-fields' },
@@ -869,7 +869,7 @@ function serviceCard(s, vatOptions, reload) {
     catch (err) { fail(card, err); }
   });
 
-  card.append(
+  put(card,
     el('div', { class: 'row between' },
       el('h3', { style: 'margin:0' }, s.name),
       s.bookable ? el('span', { class: 'chip good' }, 'bookable') : el('span', { class: 'chip' }, 'quote only')),
@@ -927,7 +927,7 @@ export async function hours(mount, ctx) {
     } catch (err) { done(); fail(form, err); }
   });
 
-  form.append(
+  put(form,
     el('div', { class: 'card' },
       el('h3', {}, 'A normal week'),
       el('div', { class: 'stack', style: 'margin-top:.8rem' }, rows.map((r) =>
@@ -1023,7 +1023,7 @@ export async function settings(mount, ctx) {
     } catch (err) { done(); fail(form, err); }
   });
 
-  form.append(
+  put(form,
     el('div', { class: 'card' },
       el('h3', {}, 'Who you are'),
       el('div', { class: 'inline-fields' },

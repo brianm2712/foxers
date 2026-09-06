@@ -29,6 +29,19 @@ export const frag = (...children) => {
 
 export function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); return node; }
 
+/*
+ * Append children to an existing node, skipping the absent ones.
+ *
+ * `node.append(null)` does NOT skip — DOM append stringifies anything that is
+ * not a Node, so a `cond ? el(…) : null` argument renders the literal text
+ * "null" on the page. Views build children conditionally everywhere, so they
+ * append through this rather than calling `.append` directly.
+ */
+export function put(node, ...children) {
+  node.append(frag(...children));
+  return node;
+}
+
 /* Currency follows the pro's region rather than the viewer's locale — the
  * invoice is a legal document and must say what was actually charged. */
 export function money(n, region = 'IE') {

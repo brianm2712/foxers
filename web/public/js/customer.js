@@ -10,7 +10,7 @@
 
 import { api, meta, jobs, session, myJobs, saveMe, customerLogin, customerSignup } from './api.js';
 import {
-  el, frag, clear, money, dateTime, dateOnly, relative, stars,
+  el, frag, clear, put, money, dateTime, dateOnly, relative, stars,
   notice, loading, empty, field, input, select, values, statusChip, copyButton, totalsBlock,
 } from './ui.js';
 
@@ -752,7 +752,7 @@ export async function join(mount, ctx) {
   const form = el('form', { class: 'card', style: 'max-width:520px' });
   const btn = el('button', { class: 'btn primary block', type: 'submit' }, 'Create my account');
 
-  form.append(
+  put(form,
     el('div', { class: 'inline-fields' },
       field('Your name', input({ name: 'name', required: true, autocomplete: 'name' })),
       field('Mobile', input({ name: 'phone', required: true, type: 'tel', autocomplete: 'tel' }),
@@ -855,7 +855,7 @@ export async function account(mount, ctx) {
     me.area || '');
   const btn = el('button', { class: 'btn primary' }, 'Save');
 
-  form.append(
+  put(form,
     field('Your name', nameIn),
     field('Mobile', phoneIn),
     field('Address', addressIn),
