@@ -974,10 +974,24 @@ const server = http.createServer(async (req, res) => {
       return H.fail(req, res, 405, 'Method not allowed', 'method_not_allowed');
     }
 
+    // Browsers ask for this unprompted; the real icons are declared in the head.
+    if (pathname === '/favicon.ico') {
+      if (H.serveStatic(WEB_ROOT, '/icons/icon-32.png', res)) return;
+    }
+
     if (H.serveStatic(WEB_ROOT, pathname, res)) return;
     if (APP_PATHS.some((rx) => rx.test(pathname))) {
       if (H.serveStatic(WEB_ROOT, '/index.html', res)) return;
     }
+
+    /*
+     * An address the app does not own still gets the app, so a mistyped or
+     * stale link lands on a page with a way back rather than on two words of
+     * plain text. The status stays 404: serving the shell with a 200 would
+     * tell a crawler that every wrong URL is a real page.
+     */
+    if (H.serveStatic(WEB_ROOT, '/index.html', res, { status: 404 })) return;
+
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
     res.end('Not found\n');
   } catch (err) {

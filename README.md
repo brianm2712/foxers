@@ -60,7 +60,7 @@ The foxxer sign-in page lists the demo logins, but only when the hostname is loc
 ### Tests
 
 ```sh
-node tests/api.test.js       # 38 — end-to-end over real HTTP
+node tests/api.test.js       # 39 — end-to-end over real HTTP
 node tests/schedule.test.js  #  7 — slot generation, DST, busy-time subtraction
 node tests/tax.test.js       #  9 — VAT, RCT, CIS, reverse charge, invoice numbering
 ```
@@ -115,7 +115,7 @@ scripts/seed.js         demo data — a marketplace worth looking at
 scripts/foxxers          start it if it is not running, then open it
 scripts/install-desktop.sh  applications-menu and desktop launcher, with the icon
 scripts/make-icons.py   app icons from the artwork (dev only, needs Pillow)
-tests/                  three suites, 54 assertions
+tests/                  three suites, 55 assertions
 ```
 
 `data/` is gitignored. It holds every password hash and the key that signs every

@@ -691,3 +691,19 @@ test('a brand new foxxer is told what stands between them and being bookable', a
   d = (await api('GET', '/api/v1/pro/dashboard', undefined, { token: t })).body;
   assert.strictEqual(d.setup.fresh, false, 'and now the money screen is the useful one');
 });
+
+test('a wrong address gets the app and a 404, not two words of plain text', async () => {
+  const r = await fetch(`${base}/nonsense-route`);
+  assert.strictEqual(r.status, 404, 'the status is honest, so a crawler is not told this is a page');
+  assert.match(r.headers.get('content-type'), /text\/html/);
+  const body = await r.text();
+  assert.match(body, /js\/app\.js/, 'and the client renders its own "nothing here" with a way back');
+
+  // A real page still answers 200, so the fallback has not swallowed routing.
+  const ok = await fetch(`${base}/find`);
+  assert.strictEqual(ok.status, 200);
+
+  const icon = await fetch(`${base}/favicon.ico`);
+  assert.strictEqual(icon.status, 200, 'browsers ask for this unprompted');
+  assert.match(icon.headers.get('content-type'), /image\/png/);
+});

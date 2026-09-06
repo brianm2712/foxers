@@ -126,7 +126,7 @@ const MIME = {
  * crafted path can escape the web root through a symlink even after the
  * lexical ".." normalisation that path.join already does.
  */
-function serveStatic(root, urlPath, res, { immutable = false } = {}) {
+function serveStatic(root, urlPath, res, { immutable = false, status = 200 } = {}) {
   let rel = decodeURIComponent(urlPath).replace(/^\/+/, '');
   if (rel === '') rel = 'index.html';
   const target = path.join(root, rel);
@@ -143,10 +143,10 @@ function serveStatic(root, urlPath, res, { immutable = false } = {}) {
   } catch {
     return false;
   }
-  if (stat.isDirectory()) return serveStatic(root, path.join(rel, 'index.html'), res, { immutable });
+  if (stat.isDirectory()) return serveStatic(root, path.join(rel, 'index.html'), res, { immutable, status });
 
   const type = MIME[path.extname(real).toLowerCase()] || 'application/octet-stream';
-  res.writeHead(200, {
+  res.writeHead(status, {
     'content-type': type,
     'content-length': stat.size,
     'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
