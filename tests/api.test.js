@@ -43,8 +43,23 @@ test.before(async () => {
   await waitForHealth(base);
 });
 
-test.after(() => {
-  if (child) child.kill('SIGTERM');
+/*
+ * Ask the server to stop, then wait until it is actually gone. It flushes the
+ * store on the way out, so removing the data directory while it is still
+ * shutting down is a race: rmSync walks past foxxers.json, the server writes
+ * it back, and the rmdir behind it finds a directory that is not empty.
+ */
+function stopServer(child) {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve();
+    const hard = setTimeout(() => child.kill('SIGKILL'), 5000);
+    child.once('exit', () => { clearTimeout(hard); resolve(); });
+    child.kill('SIGTERM');
+  });
+}
+
+test.after(async () => {
+  if (child) await stopServer(child);
   if (dataDir) fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
