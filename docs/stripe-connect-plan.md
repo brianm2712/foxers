@@ -263,7 +263,13 @@ in the ledger that never happened.
   in the Business tab and inside the agreement — and both read it from the same
   provider that performs the deduction, so the words cannot drift from the
   arithmetic.
-- ⬜ Test-mode run of every path, then live keys — **needs your test key.**
+- ⬜ Test-mode run of every path, then live keys — **needs your test key.** The
+  runner is built: `scripts/stripe-check.js` refuses a live key, exercises
+  account creation, capability reads, onboarding links, a deposit hold, a
+  destination charge and webhook signature verification, and reports what
+  Stripe actually said. Capture, transfer and cancel need a browser and a card,
+  so it prints the checkout URLs, skips those three, and refuses to call the
+  run complete until they have really run.
 
 **The agreement text is not legal advice and has not been reviewed by anyone
 qualified.** It is a plain statement of what the code actually does with a
@@ -283,7 +289,8 @@ changes its cut cannot present the new one as something already agreed to; the
 console shows an amber notice and asks them to read it again.
 
 What is left is the half of Phase 4 that only you can do: the platform profile
-in Stripe's dashboard, and a test-mode run with a real key.
+in Stripe's dashboard, and a test-mode run with a real key. Both are written
+out step by step in [go-live.md](go-live.md).
 
 ---
 

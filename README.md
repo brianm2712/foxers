@@ -439,12 +439,15 @@ each screen on each platform is built from these routes.
 - **The iOS and iPadOS clients.** `ios/` is empty. The API above is the contract they are
   meant to be built against, and `web/public/js/api.js` is the file to mirror.
 - **A verified payment path.** Stripe onboarding has had a real round trip; no charge,
-  deposit or transfer has. The Revolut adapter has never spoken to Revolut at all.
+  deposit, capture or transfer has. They are exercised only against a mock that refuses
+  what the real one refuses, which is not the same thing — run `scripts/stripe-check.js`
+  against a test key to change that. The Revolut adapter has never spoken to Revolut.
 - **Stripe Connect phase 4, going live.** Onboarding, invoice payments, deposits, the
   platform agreement and fee disclosure are built. What is left needs the Stripe
   dashboard and a test key: the platform profile and branding, and a test-mode run of
-  every money path. Scoped in `docs/stripe-connect-plan.md`, where the five decisions
-  that shaped the rest are written up.
+  every money path — `scripts/stripe-check.js` runs that check and refuses a live key.
+  Step by step in `docs/go-live.md`; the five decisions that shaped the rest are in
+  `docs/stripe-connect-plan.md`.
 - **A reviewed platform agreement.** `server/lib/agreement.js` states plainly what the
   code does with a foxxer's money and is wired into onboarding, but it has not been near
   a solicitor. Do not let a real tradesperson accept it as it stands.

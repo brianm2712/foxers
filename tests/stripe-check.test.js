@@ -1,0 +1,174 @@
+'use strict';
+/*
+ * The go-live checker, checked.
+ *
+ * `scripts/stripe-check.js` is the thing that finally points the adapter at
+ * real Stripe. It is worth testing for the same reason a smoke alarm is worth
+ * testing: a checker that reports PASS because it never really ran is worse
+ * than no checker, since it is believed.
+ *
+ * So it takes its base URL like everything else, and here it runs against a
+ * mock. What that proves is the runner: that it performs each step, reports
+ * what actually happened, refuses a live key, and does not quietly count a
+ * step it skipped as a step that passed.
+ */
+const test = require('node:test');
+const assert = require('node:assert');
+const http = require('node:http');
+const crypto = require('node:crypto');
+const path = require('node:path');
+
+const ROOT = path.resolve(__dirname, '..');
+const { run } = require(path.join(ROOT, 'scripts', 'stripe-check.js'));
+
+const KEY = 'sk_test_checker';
+let stripe, base;
+const seen = [];
+const accounts = new Map();
+let failCheckoutOnce = false;
+
+test.before(async () => {
+  stripe = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const raw = Buffer.concat(chunks).toString();
+    const isJson = /application\/json/.test(req.headers['content-type'] || '');
+    const body = raw ? (isJson ? JSON.parse(raw) : Object.fromEntries(new URLSearchParams(raw))) : {};
+    const [pathname] = req.url.split('?');
+    seen.push({ method: req.method, pathname, body, isJson });
+
+    const bad = (status, message) => {
+      res.writeHead(status, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message } }));
+    };
+    const ok = (d) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(d));
+    };
+
+    if (req.headers.authorization !== `Bearer ${KEY}`) return bad(401, 'Invalid API Key provided');
+    if (!req.headers['stripe-version']) return bad(400, 'Missing Stripe-Version');
+
+    if (req.method === 'POST' && pathname === '/v2/core/accounts') {
+      if (!isJson) return bad(400, 'v2 endpoints require a JSON body');
+      const id = 'acct_' + crypto.randomBytes(6).toString('hex');
+      accounts.set(id, {
+        id,
+        configuration: {
+          merchant: { capabilities: { card_payments: { status: 'restricted' } } },
+          recipient: {
+            capabilities: {
+              stripe_balance: { payouts: { status: 'restricted' }, stripe_transfers: { status: 'restricted' } },
+            },
+          },
+        },
+        requirements: { entries: [{ awaiting_action_from: 'user', description: 'external_account' }] },
+      });
+      return ok(accounts.get(id));
+    }
+    const one = pathname.match(/^\/v2\/core\/accounts\/([^/]+)$/);
+    if (req.method === 'GET' && one) {
+      const a = accounts.get(decodeURIComponent(one[1]));
+      if (!a) return bad(404, 'No such account');
+      if (!/include=/.test(req.url)) return ok({ ...a, configuration: null, requirements: null });
+      return ok(a);
+    }
+    if (req.method === 'POST' && pathname === '/v1/account_links') {
+      if (!accounts.has(body.account)) return bad(404, 'No such account');
+      return ok({ url: `https://connect.stripe.test/setup/${body.account}`,
+        expires_at: Math.floor(Date.now() / 1000) + 300 });
+    }
+    if (req.method === 'POST' && pathname === '/v1/checkout/sessions') {
+      if (failCheckoutOnce) { failCheckoutOnce = false; return bad(400, 'Sessions are switched off'); }
+      const id = 'cs_test_' + crypto.randomBytes(6).toString('hex');
+      return ok({ id, url: `https://checkout.stripe.test/c/pay/${id}`,
+        payment_intent: 'pi_' + crypto.randomBytes(6).toString('hex') });
+    }
+    return bad(404, `mock has no route for ${req.method} ${pathname}`);
+  });
+  await new Promise((r) => stripe.listen(0, '127.0.0.1', r));
+  base = `http://127.0.0.1:${stripe.address().port}`;
+});
+
+test.after(() => { if (stripe) stripe.close(); });
+
+const byName = (report, re) => report.steps.find((s) => re.test(s.name));
+
+/* ---- the tests --------------------------------------------------------- */
+
+test('a live key is refused before a single call is made', async () => {
+  const before = seen.length;
+  const report = await run({ secretKey: 'sk_live_realmoney', base, quiet: true });
+
+  assert.strictEqual(report.ok, false);
+  assert.strictEqual(report.refused, 'live_key');
+  assert.strictEqual(seen.length, before, 'and nothing was sent to Stripe on the way to refusing');
+});
+
+test('every step it can do headlessly is actually performed and reported', async () => {
+  const report = await run({ secretKey: KEY, base, publicUrl: 'https://foxxers.test', quiet: true });
+  assert.strictEqual(report.ok, true, JSON.stringify(report.steps, null, 1));
+
+  // A write, not a read. Listing accounts succeeds on a platform that cannot
+  // create one, which is exactly how this went wrong the first time.
+  const created = byName(report, /connected account/i);
+  assert.strictEqual(created.status, 'pass');
+  assert.ok(seen.some((s) => s.method === 'POST' && s.pathname === '/v2/core/accounts' && s.isJson),
+    'the account was created for real, as JSON');
+
+  assert.strictEqual(byName(report, /capabilities/i).status, 'pass');
+  assert.strictEqual(byName(report, /onboarding link/i).status, 'pass');
+  assert.strictEqual(byName(report, /deposit/i).status, 'pass');
+  assert.strictEqual(byName(report, /invoice/i).status, 'pass');
+  assert.strictEqual(byName(report, /webhook signature/i).status, 'pass');
+});
+
+test('the deposit is authorised, and the invoice carries the platform fee', async () => {
+  seen.length = 0;
+  await run({ secretKey: KEY, base, publicUrl: 'https://foxxers.test', feeBps: 200, quiet: true });
+
+  const sessions = seen.filter((s) => s.pathname === '/v1/checkout/sessions');
+  assert.strictEqual(sessions.length, 2, 'one for the deposit, one for the invoice');
+
+  const deposit = sessions.find((s) => s.body['payment_intent_data[capture_method]'] === 'manual');
+  assert.ok(deposit, 'the deposit is a hold, not a charge');
+  assert.strictEqual(deposit.body['payment_intent_data[transfer_data][destination]'], undefined,
+    'and it is authorised on the platform, since a request has no foxxer yet');
+
+  const invoice = sessions.find((s) => s !== deposit);
+  assert.ok(invoice.body['payment_intent_data[transfer_data][destination]'], 'a destination charge');
+  assert.strictEqual(invoice.body['payment_intent_data[application_fee_amount]'], '200',
+    '2% of the EUR 100 it bills with');
+});
+
+/*
+ * The steps that cannot be done without a browser and a card. They must be
+ * reported as skipped, with the reason — a checker that counts them as passes
+ * would say the money paths are proven when nothing has moved.
+ */
+test('the steps that need a human are skipped, and say why', async () => {
+  const report = await run({ secretKey: KEY, base, quiet: true });
+
+  const capture = byName(report, /capture/i);
+  assert.strictEqual(capture.status, 'skip');
+  assert.match(capture.reason, /complete|browser|card/i);
+
+  assert.strictEqual(byName(report, /cancel/i).status, 'skip');
+  assert.strictEqual(byName(report, /transfer/i).status, 'skip');
+
+  // Skipped is not passed. The summary has to keep them apart, or "all green"
+  // means nothing.
+  assert.ok(report.skipped >= 3, 'skips are counted');
+  assert.strictEqual(report.ok, true, 'but skipping is not failing — there is just more to do');
+  assert.strictEqual(report.complete, false, 'and the run is explicitly not complete');
+});
+
+test('a step that fails is reported as failed, and sinks the run', async () => {
+  failCheckoutOnce = true;
+  const report = await run({ secretKey: KEY, base, quiet: true });
+
+  assert.strictEqual(report.ok, false);
+  const failed = report.steps.filter((s) => s.status === 'fail');
+  assert.strictEqual(failed.length, 1);
+  assert.match(failed[0].detail, /switched off/, 'and it says what Stripe actually complained about');
+});
