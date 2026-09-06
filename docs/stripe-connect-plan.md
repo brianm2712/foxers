@@ -250,15 +250,40 @@ branches on `kind` and lets the capturable event do the work.
 branches. For a cancellation that is false, and it would have put a €5 movement
 in the ledger that never happened.
 
-### Phase 4 — going live  (~half a day plus Stripe's review)
+### Phase 4 — going live  (partly built)
 
-- Stripe platform profile, Connect enabled, branding
-- A platform agreement foxxers accept at onboarding
-- Fees disclosed to both sides before they commit
-- Test-mode run of every path, then live keys
+- ⬜ Stripe platform profile, Connect enabled, branding — **yours, in the Stripe
+  dashboard.** Nothing in this repo can do it.
+- ✅ A platform agreement foxxers accept at onboarding. `server/lib/agreement.js`,
+  versioned, served at `GET /api/v1/pro/agreement` and accepted at
+  `POST /api/v1/pro/agreement/accept`. `payouts/onboard` refuses with
+  `agreement_required` until it is accepted, checked **before** anything is
+  created at Stripe so a refusal cannot leave a half-made account behind.
+- ✅ Fees disclosed before they commit. The rate is stated on the payouts card
+  in the Business tab and inside the agreement — and both read it from the same
+  provider that performs the deduction, so the words cannot drift from the
+  arithmetic.
+- ⬜ Test-mode run of every path, then live keys — **needs your test key.**
 
-Phases 1 to 3 are built. What is left is Phase 4 — **about half a day of work,
-spread over however long Stripe takes to approve the platform.**
+**The agreement text is not legal advice and has not been reviewed by anyone
+qualified.** It is a plain statement of what the code actually does with a
+foxxer's money, written so the terms and the behaviour cannot quietly disagree.
+It needs a solicitor before a real person accepts it, particularly on consumer
+law, PSD2/PSR, and what an Irish or UK sole trader can be asked to indemnify.
+
+Two details worth keeping:
+
+**The version is checked on the way in.** `accept` takes the version the client
+was shown and refuses anything else with `stale_agreement`. Accepting whatever
+the server currently holds would record agreement to words that changed while
+the page was open, which is the exact case a version exists to catch.
+
+**The fee in force is stored with the acceptance.** An instance that later
+changes its cut cannot present the new one as something already agreed to; the
+console shows an amber notice and asks them to read it again.
+
+What is left is the half of Phase 4 that only you can do: the platform profile
+in Stripe's dashboard, and a test-mode run with a real key.
 
 ---
 

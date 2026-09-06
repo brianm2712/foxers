@@ -290,6 +290,60 @@ test('an un-onboarded foxxer still appears in search and can be published', asyn
     'a foxxer with no Stripe account is still findable');
 });
 
+/* ---- what they are told before they commit ----------------------------- */
+
+/*
+ * The platform takes a cut and the foxxer carries disputes. Both are things a
+ * sole trader finds out either here, or from a number that does not match
+ * their invoice three weeks later.
+ */
+test('a foxxer is told the platform takes 2% before they set anything up', async () => {
+  const r = await api('GET', '/api/v1/pro/payouts');
+  assert.strictEqual(r.status, 200, r.raw);
+  assert.strictEqual(r.body.fee.bps, 200, r.raw);
+  assert.strictEqual(r.body.fee.cents, 0);
+  // Said in money, not basis points: "200 bps" is not a disclosure to someone
+  // pricing a job on the back of a van.
+  assert.match(r.body.fee.description, /2%/);
+});
+
+test('onboarding is refused until the platform agreement is accepted', async () => {
+  const r = await api('POST', '/api/v1/pro/payouts/onboard');
+  assert.strictEqual(r.status, 400, r.raw);
+  assert.strictEqual(r.body.code, 'agreement_required');
+
+  // And nothing was created at Stripe on the way to being refused.
+  assert.strictEqual(seen.filter((s) => s.url === '/v2/core/accounts' && s.method === 'POST').length, 0,
+    'a refused onboarding must not leave a half-made account behind');
+});
+
+test('the agreement says what it costs and who carries a dispute', async () => {
+  const r = await api('GET', '/api/v1/pro/agreement');
+  assert.strictEqual(r.status, 200, r.raw);
+  assert.ok(r.body.version, 'it is versioned, so acceptance means something specific');
+  assert.match(r.body.body, /2%/, 'the fee is in the agreement, not only in the UI');
+  assert.match(r.body.body, /dispute|chargeback/i, 'and so is who carries a dispute');
+  assert.strictEqual(r.body.accepted, null, 'not accepted yet');
+});
+
+test('accepting the agreement is recorded against the version that was shown', async () => {
+  const current = (await api('GET', '/api/v1/pro/agreement')).body.version;
+
+  // Accepting some other version is refused: the whole point of a version is
+  // that it says which words were agreed to.
+  const stale = await api('POST', '/api/v1/pro/agreement/accept', { version: '1970-01-01' });
+  assert.strictEqual(stale.status, 400, stale.raw);
+  assert.strictEqual(stale.body.code, 'stale_agreement');
+
+  const ok = await api('POST', '/api/v1/pro/agreement/accept', { version: current });
+  assert.strictEqual(ok.status, 200, ok.raw);
+  assert.strictEqual(ok.body.accepted.version, current);
+  assert.ok(Date.parse(ok.body.accepted.at) > 0, 'and when');
+
+  const seenAgain = await api('GET', '/api/v1/pro/agreement');
+  assert.strictEqual(seenAgain.body.accepted.version, current);
+});
+
 test('onboarding creates one v2 account, as JSON, and hands back a Stripe link', async () => {
   const r = await api('POST', '/api/v1/pro/payouts/onboard');
   assert.strictEqual(r.status, 200, r.raw);

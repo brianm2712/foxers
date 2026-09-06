@@ -411,7 +411,9 @@ each screen on each platform is built from these routes.
 | `GET /api/v1/pro/chases`, `POST /api/v1/pro/chases/:invoiceId` | |
 | `PUT /api/v1/pro/profile` | |
 | `GET /api/v1/pro/payouts` | Whether Stripe can pay them yet, and what it is still waiting on |
-| `POST /api/v1/pro/payouts/onboard` | A Stripe onboarding link. Creates the account the first time, never twice |
+| `POST /api/v1/pro/payouts/onboard` | A Stripe onboarding link. Creates the account the first time, never twice. Refused until the agreement is accepted |
+| `GET /api/v1/pro/agreement` | The platform agreement, its version, and whether they have accepted it |
+| `POST /api/v1/pro/agreement/accept` | Accept it, against the version that was shown |
 
 ---
 
@@ -438,10 +440,14 @@ each screen on each platform is built from these routes.
   meant to be built against, and `web/public/js/api.js` is the file to mirror.
 - **A verified payment path.** Stripe onboarding has had a real round trip; no charge,
   deposit or transfer has. The Revolut adapter has never spoken to Revolut at all.
-- **Stripe Connect phase 4, going live.** Onboarding, invoice payments and deposits are
-  built; the platform profile, the agreement foxxers accept, fee disclosure and the
-  test-mode run of every path are scoped in `docs/stripe-connect-plan.md`. The five
-  decisions that shaped the rest are all made and written up there.
+- **Stripe Connect phase 4, going live.** Onboarding, invoice payments, deposits, the
+  platform agreement and fee disclosure are built. What is left needs the Stripe
+  dashboard and a test key: the platform profile and branding, and a test-mode run of
+  every money path. Scoped in `docs/stripe-connect-plan.md`, where the five decisions
+  that shaped the rest are written up.
+- **A reviewed platform agreement.** `server/lib/agreement.js` states plainly what the
+  code does with a foxxer's money and is wired into onboarding, but it has not been near
+  a solicitor. Do not let a real tradesperson accept it as it stands.
 - **Photos on a request.** The field exists and is always empty.
 - **Refunding a deposit on a request nobody ever quoted.** The state and the transition
   exist; nothing schedules it.

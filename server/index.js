@@ -27,6 +27,7 @@ const pay = require('./lib/payments');
 const { VERSION, API_VERSION } = require('./version');
 const revolut = require('./lib/providers/revolut');
 const stripe = require('./lib/providers/stripe');
+const agreement = require('./lib/agreement');
 
 /*
  * Which rail moves the money. Nothing but `manual` unless the environment
@@ -1196,6 +1197,34 @@ function payoutsView(pro) {
     /* The invoice route refuses to raise a card payment when this is false. */
     canBePaid,
     checkedAt: c?.checkedAt || null,
+    /*
+     * What the platform takes, and what they agreed to. Both are here rather
+     * than only on a settings page nobody opens, because this is the card a
+     * foxxer reads immediately before deciding to hand Stripe their ID.
+     */
+    fee: platformFee(),
+    agreement: agreementState(pro),
+  };
+}
+
+/* Zero on an instance with no rail: nothing is deducted, so nothing is claimed. */
+function platformFee() {
+  return connect?.fee ? connect.fee() : { bps: 0, cents: 0, description: 'no platform fee' };
+}
+
+/*
+ * Acceptance is recorded against a version, so it always means a specific set
+ * of words. The fee in force at the time goes with it: an instance that later
+ * changes its cut must not be able to say the foxxer agreed to the new one.
+ */
+function agreementState(pro) {
+  const a = pro.agreement || null;
+  const fee = platformFee();
+  return {
+    version: agreement.VERSION,
+    accepted: a ? { version: a.version, at: a.at } : null,
+    current: !!a && a.version === agreement.VERSION,
+    feeChanged: !!a && (a.feeBps !== fee.bps || a.feeCents !== fee.cents),
   };
 }
 
@@ -1228,9 +1257,68 @@ on('GET', '/api/v1/pro/payouts', async (req, res) => {
  * first. Links, unlike accounts, are single-use and short-lived, so every call
  * mints a fresh one.
  */
+/*
+ * The agreement, and accepting it.
+ *
+ * The fee is interpolated from what this instance actually deducts rather than
+ * typed into the text, so the words and the arithmetic cannot drift apart.
+ */
+on('GET', '/api/v1/pro/agreement', async (req, res) => {
+  const pro = requirePro(req, res); if (!pro) return;
+  const fee = platformFee();
+  H.json(res, 200, {
+    version: agreement.VERSION,
+    title: agreement.TITLE,
+    body: agreement.body({ feeDescription: fee.description }),
+    fee,
+    ...agreementState(pro),
+  });
+});
+
+on('POST', '/api/v1/pro/agreement/accept', async (req, res) => {
+  const pro = requirePro(req, res); if (!pro) return;
+  const body = await H.readJson(req);
+  /*
+   * The version has to come back from the client. Accepting whatever the
+   * server currently holds would record agreement to words that may have
+   * changed between the page loading and the button being pressed — which is
+   * exactly the case a version exists to catch.
+   */
+  if (String(body.version || '') !== agreement.VERSION) {
+    return H.fail(req, res, 400,
+      'The agreement has changed since you opened it — please read it again',
+      'stale_agreement');
+  }
+  const fee = platformFee();
+  const updated = store.update('pros', pro.id, {
+    agreement: {
+      version: agreement.VERSION,
+      at: new Date().toISOString(),
+      // What they were told it would cost, kept so a later change to the fee
+      // cannot be presented as something they already agreed to.
+      feeBps: fee.bps,
+      feeCents: fee.cents,
+      ip: H.clientIp(req),
+    },
+  });
+  store.log('agreement.accepted', pro.id, { version: agreement.VERSION, feeBps: fee.bps });
+  H.json(res, 200, agreementState(updated));
+});
+
 on('POST', '/api/v1/pro/payouts/onboard', async (req, res) => {
   const pro = requirePro(req, res); if (!pro) return;
   if (!connect) return H.fail(req, res, 400, 'This instance does not take card payments', 'no_provider');
+
+  /*
+   * Checked before anything is created at Stripe, so a refusal here cannot
+   * leave a half-made connected account behind with nobody having agreed to
+   * anything.
+   */
+  if (!agreementState(pro).current) {
+    return H.fail(req, res, 400,
+      'Read and accept the platform agreement before setting up payouts',
+      'agreement_required');
+  }
 
   let current = pro;
   if (!current.stripeAccountId) {

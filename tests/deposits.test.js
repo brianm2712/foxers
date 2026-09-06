@@ -267,6 +267,13 @@ test('a foxxer onboards and can take money', async () => {
   proToken = r.body.token;
 
   await api('PUT', '/api/v1/pro/profile', { published: true }, { token: proToken });
+
+  // Nothing reaches Stripe until they have agreed to what it costs them.
+  const terms = await api('GET', '/api/v1/pro/agreement', undefined, { token: proToken });
+  const accepted = await api('POST', '/api/v1/pro/agreement/accept',
+    { version: terms.body.version }, { token: proToken });
+  assert.strictEqual(accepted.status, 200, accepted.raw);
+
   const on = await api('POST', '/api/v1/pro/payouts/onboard', undefined, { token: proToken });
   assert.strictEqual(on.status, 200, on.raw);
   accountId = on.body.accountId;

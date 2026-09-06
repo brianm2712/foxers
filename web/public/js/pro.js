@@ -1196,10 +1196,58 @@ export async function settings(mount, ctx) {
       },
     }[s.status];
 
+    /*
+     * What it costs them, said before they hand Stripe their ID rather than
+     * discovered on the first payment that comes up short.
+     */
+    const feeLine = s.fee && s.fee.bps + s.fee.cents > 0
+      ? el('p', { class: 'muted', style: 'margin:0 0 .9rem' },
+          'Foxxers takes ', el('strong', {}, s.fee.description),
+          '. Stripe charges its own processing fee on top, under your agreement with them.')
+      : null;
+
+    /*
+     * The agreement. Fetched only when opened — it is long, and most visits to
+     * this page are somebody checking whether Stripe is done yet.
+     */
+    const needsAgreement = !!(s.agreement && !s.agreement.current);
+    const terms = el('div', { class: 'muted' }, 'Loading…');
+    const reader = el('details', { style: 'margin:0 0 .7rem' },
+      el('summary', {}, needsAgreement ? 'Read the platform agreement' : 'Read the agreement again'),
+      terms);
+    let loaded = false;
+    reader.addEventListener('toggle', async () => {
+      if (!reader.open || loaded) return;
+      loaded = true;
+      try {
+        const a = await api.get('/api/v1/pro/agreement');
+        put(clear(terms), el('pre', { class: 'agreement', style: 'white-space:pre-wrap' }, a.body));
+      } catch {
+        loaded = false;
+        put(clear(terms), el('p', { class: 'muted' }, 'Could not load it just now — try again in a minute.'));
+      }
+    });
+
+    const agreeBox = input({ type: 'checkbox' });
+    const agreeRow = needsAgreement
+      ? el('label', { class: 'row', style: 'gap:.5rem; margin:0 0 .9rem' }, agreeBox,
+          el('span', {}, 'I have read and accept the platform agreement.'))
+      : null;
+
     const go = el('button', { class: `btn ${s.status === 'ready' ? 'sm' : 'primary'}` }, said.cta);
     go.addEventListener('click', async () => {
+      // Refused here rather than by the server so the box cannot be a
+      // formality the button skips past.
+      if (needsAgreement && !agreeBox.checked) {
+        return fail(payoutsCard, new Error('Tick the box to accept the platform agreement first.'));
+      }
       const done = busy(go, 'Opening Stripe…');
       try {
+        if (needsAgreement) {
+          // Against the version that was shown, not whatever the server holds
+          // by the time the button is pressed.
+          await api.post('/api/v1/pro/agreement/accept', { version: s.agreement.version });
+        }
         const r = await api.post('/api/v1/pro/payouts/onboard', {});
         // Single-use and short-lived, so it is followed now or not at all.
         location.href = r.url;
@@ -1219,9 +1267,16 @@ export async function settings(mount, ctx) {
         el('h3', { style: 'margin:0' }, 'Getting paid'),
         el('span', { class: `chip ${said.chip[0]}` }, said.chip[1])),
       el('p', { class: 'muted', style: 'margin:.6rem 0 .9rem' }, said.body),
+      feeLine,
       s.needs.length ? el('p', { class: 'muted', style: 'margin:0 0 .9rem' },
         'Stripe is waiting on: ',
         el('strong', {}, [...new Set(s.needs.map(needName))].join(', '))) : null,
+      reader,
+      agreeRow,
+      // A fee change after they agreed is theirs to know about, not something
+      // to let past on the strength of an older acceptance.
+      s.agreement?.feeChanged ? el('p', { class: 'notice amber', style: 'margin:0 0 .9rem' },
+        'The platform fee has changed since you accepted the agreement. Read it again.') : null,
       go);
   };
 

@@ -93,6 +93,20 @@ class StripeError extends Error {
   }
 }
 
+/*
+ * The fee in the words it has to be disclosed in. "200 basis points" is not a
+ * disclosure to a sole trader pricing a job on the back of a van, and the
+ * agreement and the console must not paraphrase it differently — so both read
+ * this, and it is derived from the same numbers the deduction uses.
+ */
+function describeFee(bps, cents) {
+  const pct = `${Number((bps / 100).toFixed(2))}%`;
+  if (!bps && !cents) return 'no platform fee';
+  if (!cents) return `${pct} of each payment taken through the app`;
+  if (!bps) return `${cents}c on each payment taken through the app`;
+  return `${pct} plus ${cents}c on each payment taken through the app`;
+}
+
 /* An unset variable and one set to the empty string mean the same thing here:
  * nobody said. Reading `''` as zero would silently waive the platform fee. */
 function envNumber(name, fallback) {
@@ -208,6 +222,10 @@ function create({ secretKey, base, publicUrl, feeBps = DEFAULT_FEE_BPS, feeFlat 
 
   return {
     key: 'stripe',
+
+    /* What this instance deducts, for disclosing it in the same terms it is
+     * charged in. Read by the agreement and by the foxxer's payouts card. */
+    fee: () => ({ bps, cents: flat, description: describeFee(bps, flat) }),
 
     /*
      * The deposit. Authorised on the platform because an open request has no
@@ -373,4 +391,7 @@ function verifyWebhook({ secret, signatureHeader, rawBody, toleranceSec = 300 })
   return crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expected));
 }
 
-module.exports = { create, verifyWebhook, form, toMinor, fromMinor, API_VERSION };
+module.exports = {
+  create, verifyWebhook, form, toMinor, fromMinor, describeFee,
+  API_VERSION, DEFAULT_FEE_BPS,
+};
