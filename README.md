@@ -68,6 +68,18 @@ node tests/tax.test.js       #  9 — VAT, RCT, CIS, reverse charge, invoice num
 `api.test.js` spawns a real server on a throwaway data directory and drives it the way
 the iOS client will: bearer token, JSON in, JSON out.
 
+### On a Linux desktop
+
+```sh
+./scripts/install-desktop.sh
+```
+
+Puts Foxers in the applications menu and on the desktop with the fox icon.
+Launching it starts the server if it is not already running — seeding first if
+there is no database yet — waits for it to answer, then opens the browser. If
+it cannot start, it says so in a dialog rather than doing nothing. Everything
+lands under `$HOME`; nothing needs root.
+
 ### Environment
 
 | Variable | Default | Purpose |
@@ -100,6 +112,9 @@ web/public/js/api.js       the only place that talks to the server
 web/public/js/ui.js        DOM and money-formatting helpers
 
 scripts/seed.js         demo data — a marketplace worth looking at
+scripts/foxers          start it if it is not running, then open it
+scripts/install-desktop.sh  applications-menu and desktop launcher, with the icon
+scripts/make-icons.py   app icons from the artwork (dev only, needs Pillow)
 tests/                  three suites, 51 assertions
 ```
 
@@ -290,6 +305,8 @@ each screen on each platform is built from these routes.
 ## Constraints worth keeping
 
 - **Node standard library only.** No npm, no build step, no lockfile, no supply chain.
+  The single exception is `scripts/make-icons.py`, which regenerates the app icons
+  from the artwork and runs on a workstation, never at runtime.
 - **No outbound calls.** The server talks to nothing on the internet. Adding a payment
   provider is the first and only planned exception, and it goes behind the seam above.
 - **No tracking, no analytics, no third-party requests** on the web client. No web fonts

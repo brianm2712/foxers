@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+#
+# Start Foxers if it is not already up, then open it.
+#
+# Written for the desktop launcher, where there is nowhere to print an error:
+# anything that goes wrong is put in front of the user as a dialog rather than
+# leaving them clicking an icon that silently does nothing.
+set -u
+
+ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+PORT="${FOXERS_PORT:-8120}"
+DATA="${FOXERS_DATA:-$ROOT/data}"
+LOG="${XDG_STATE_HOME:-$HOME/.local/state}/foxers.log"
+URL="http://localhost:$PORT"
+
+mkdir -p "$(dirname "$LOG")"
+
+fail() {
+  if command -v zenity > /dev/null; then
+    zenity --error --title=Foxers --width=420 --text="$1" 2>/dev/null
+  elif command -v notify-send > /dev/null; then
+    notify-send -u critical "Foxers" "$1"
+  fi
+  echo "foxers: $1" >&2
+  exit 1
+}
+
+command -v node > /dev/null || fail "Node is not installed, so Foxers cannot start."
+
+# Already listening? Then just open it — never start a second copy, which
+# would fight the first one over the same database file.
+if ! curl -sf --max-time 2 "$URL/api/v1/health" > /dev/null 2>&1; then
+  [ -f "$DATA/foxers.json" ] || FOXERS_DATA="$DATA" node "$ROOT/scripts/seed.js" >> "$LOG" 2>&1
+
+  FOXERS_DATA="$DATA" FOXERS_PORT="$PORT" \
+    setsid node "$ROOT/server/index.js" >> "$LOG" 2>&1 < /dev/null &
+
+  for _ in $(seq 40); do
+    curl -sf --max-time 1 "$URL/api/v1/health" > /dev/null 2>&1 && break
+    sleep 0.25
+  done
+
+  curl -sf --max-time 2 "$URL/api/v1/health" > /dev/null 2>&1 \
+    || fail "Foxers did not start. The last few lines of $LOG:\n\n$(tail -n 6 "$LOG" 2>/dev/null)"
+fi
+
+exec xdg-open "$URL"

@@ -72,11 +72,9 @@ small { color: var(--muted); }
 }
 .brand { display: flex; align-items: center; gap: .55rem; font-weight: 750; letter-spacing: -.02em; font-size: 1.15rem; color: var(--off-white); }
 .brand:hover { text-decoration: none; }
-.brand .mark {
-  width: 26px; height: 26px; border-radius: 7px;
-  background: var(--amber); color: var(--charcoal);
-  display: grid; place-items: center; font-size: 15px; font-weight: 800;
-}
+/* The tile behind the fox is the same charcoal as the bar, so the mark reads
+   as a logo rather than a badge stuck onto one. */
+.brand .mark { width: 32px; height: 32px; display: block; object-fit: contain; }
 .topbar nav { margin-left: auto; display: flex; gap: .35rem; align-items: center; flex-wrap: wrap; }
 .topbar nav a { padding: .4rem .7rem; border-radius: 8px; color: var(--muted); font-size: .92rem; font-weight: 500; }
 .topbar nav a:hover { background: var(--graphite); color: var(--off-white); text-decoration: none; }

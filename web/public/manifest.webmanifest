@@ -1,5 +1,5 @@
 {
-  "name": "Foxers — trades booking",
+  "name": "Foxers \u2014 trades booking",
   "short_name": "Foxers",
   "description": "Find a tradesperson, book a slot, agree a quote, get the invoice.",
   "start_url": "/",
@@ -9,12 +9,45 @@
   "background_color": "#1C1E21",
   "theme_color": "#1C1E21",
   "icons": [
-    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
-    { "src": "/icons/icon-180.png", "sizes": "180x180", "type": "image/png" },
-    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+    {
+      "src": "/icons/icon-32.png",
+      "sizes": "32x32",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-180.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-1024.png",
+      "sizes": "1024x1024",
+      "type": "image/png"
+    }
   ],
   "shortcuts": [
-    { "name": "Find a tradesperson", "url": "/find" },
-    { "name": "My work", "url": "/pro" }
+    {
+      "name": "Find a tradesperson",
+      "url": "/find"
+    },
+    {
+      "name": "My jobs",
+      "url": "/me"
+    },
+    {
+      "name": "My work",
+      "url": "/dash"
+    }
   ]
 }
