@@ -46,39 +46,77 @@ export async function home(mount, ctx) {
     ctx.navigate(`/find?${p}`);
   };
 
+  const bookable = m.trades.reduce((n, t) => n + t.bookable.length, 0);
+
   clear(mount).append(frag(
     el('section', { class: 'hero' },
-      el('h1', {}, 'Find a tradesperson who can actually come.'),
-      el('p', { class: 'lede' },
-        'See real availability, book the fixed-price jobs outright, and ask for a quote on everything else. ',
-        'What you agree is written down and timestamped — not left in a voice note.'),
-      el('div', { class: 'searchbar' },
-        tradeSel, areaSel,
-        el('button', { class: 'btn primary', onclick: go }, 'Search')),
-    ),
+      el('div', {},
+        el('h1', {}, 'Find a tradesperson who can actually come.'),
+        el('p', { class: 'lede' },
+          'See real availability, book the fixed-price jobs outright, and ask for a quote on everything else. ',
+          'What you agree is written down and timestamped — not left in a voice note.'),
+        el('div', { class: 'searchbar' },
+          tradeSel, areaSel,
+          el('button', { class: 'btn primary', onclick: go }, 'Search')),
+        el('div', { class: 'proof' },
+          el('span', {}, `${m.trades.length} trades`),
+          el('span', {}, `${bookable} jobs you can book outright`),
+          el('span', {}, 'VAT, RCT and CIS handled'),
+          el('span', {}, 'No account needed to look'))),
 
-    el('h2', {}, 'Browse by trade'),
+      /* Not an illustration — this is the booking card the app actually
+       * renders, which is the whole promise in one glance. */
+      el('div', { class: 'hero-aside', 'aria-hidden': 'true' },
+        el('div', { class: 'demo-card' },
+          el('div', { class: 'row between' },
+            el('div', { class: 'row' },
+              el('div', { class: 'monogram' }, 'BE'),
+              el('div', {},
+                el('div', { style: 'font-weight:700' }, 'Byrne Electrical'),
+                el('small', {}, el('span', { class: 'stars' }, '★★★★★'), ' 4.5 · Dublin'))),
+            el('span', { class: 'chip good' }, 'Verified')),
+          el('div', { style: 'margin-top:1rem' },
+            el('small', {}, 'Fuse board inspection · 60 min · €120')),
+          el('div', { class: 'demo-slots' },
+            el('div', { class: 'demo-slot' }, 'Mon 08:00'),
+            el('div', { class: 'demo-slot on' }, 'Mon 11:30'),
+            el('div', { class: 'demo-slot' }, 'Tue 08:30')),
+          el('div', { style: 'margin-top:.9rem' },
+            el('span', { class: 'btn primary block sm' }, 'Book Monday, 11:30'))))),
+
+    el('div', { class: 'section-head' }, el('h2', {}, 'Browse by trade')),
     el('div', { class: 'trade-grid' },
       m.trades.map((t) => el('a', {
         class: 'trade-tile',
         href: `/find?trade=${t.key}${areaSel.value ? `&area=${areaSel.value}` : ''}`,
       }, el('span', { class: 'ic' }, t.icon), t.name))),
 
-    el('div', { class: 'card', style: 'margin-top:2rem' },
-      el('div', { class: 'row between' },
-        el('div', {},
-          el('h2', {}, 'Emergency?'),
-          el('p', { class: 'muted', style: 'margin:0' },
-            'Nobody books a 30-minute slot for a leaking boiler. Tell us what has happened and it goes to the top of the list for every matching trade in your county.')),
-        el('a', { class: 'btn primary', href: '/find?emergency=1' }, 'Get someone out'))),
+    el('div', { class: 'section-head' }, el('h2', {}, 'How it works')),
+    el('div', { class: 'how' },
+      el('div', { class: 'step-card' },
+        el('div', { class: 'n' }, '1'),
+        el('h3', {}, 'Book it, or ask'),
+        el('p', {}, 'Fixed-price work — a boiler service, an EICR, a lock change — books outright against real availability. Anything open-ended goes out as a job description instead.')),
+      el('div', { class: 'step-card' },
+        el('div', { class: 'n' }, '2'),
+        el('h3', {}, 'Get a written quote'),
+        el('p', {}, 'Priced line by line with the VAT shown, and two or three hours the tradesperson genuinely has free. Accepting one books it there and then.')),
+      el('div', { class: 'step-card' },
+        el('div', { class: 'n' }, '3'),
+        el('h3', {}, 'Pay when it is done'),
+        el('p', {}, 'Card, wallet or transfer at the door, and a receipt with the VAT broken out — not a number shouted over a van door.'))),
 
-    el('div', { class: 'card' },
-      el('div', { class: 'row between' },
-        el('div', {},
-          el('h2', {}, 'On the tools?'),
-          el('p', { class: 'muted', style: 'margin:0' },
-            'Quote, get it accepted, invoice, get paid. VAT at 13.5%, RCT and CIS withholding and reverse charge handled properly — not bolted on.')),
-        el('a', { class: 'btn', href: '/signup' }, 'List your business'))),
+    el('div', { class: 'panel panel-urgent', style: 'margin-top:2.2rem' },
+      el('div', {},
+        el('h2', {}, 'Something has burst, tripped or stopped'),
+        el('p', {}, 'Nobody books a 30-minute slot for a leaking boiler. Tell us what has happened and it goes to the top of the list for every matching trade in your county.')),
+      el('a', { class: 'btn primary', href: '/find?emergency=1' }, 'Get someone out')),
+
+    el('div', { class: 'panel panel-trade', style: 'margin-top:.9rem' },
+      el('div', {},
+        el('h2', {}, 'On the tools?'),
+        el('p', {}, 'Quote, get it accepted, invoice, get paid. VAT at 13.5%, RCT and CIS withholding and reverse charge handled properly — not bolted on.')),
+      el('a', { class: 'btn', href: '/signup' }, 'List your business')),
   ));
 }
 
@@ -148,13 +186,27 @@ export async function find(mount, ctx) {
         el('a', { class: 'btn primary', href: `/ask?${params}` }, 'Describe the job')))));
 }
 
+/*
+ * Initials from the business name. Two letters where there are two words to
+ * take them from, otherwise the first two of the only word — "Byrne
+ * Electrical" is BE, "Foxers" is FO.
+ */
+export function initials(name) {
+  const words = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return '??';
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return (words[0][0] + words[words.length - 1][0]).toUpperCase();
+}
+
 function proCard(p, m) {
   const tradeNames = p.trades.map((t) => m.trades.find((x) => x.key === t)?.name).filter(Boolean);
-  return el('div', { class: 'card' },
+  return el('a', { class: 'card', href: `/pro/${p.slug}` },
     el('div', { class: 'pro-card' },
+      el('div', { class: 'monogram' }, initials(p.business)),
+
       el('div', {},
         el('div', { class: 'row' },
-          el('h2', { style: 'margin:0' }, el('a', { href: `/pro/${p.slug}` }, p.business)),
+          el('h2', { style: 'margin:0' }, p.business),
           p.verified ? el('span', { class: 'chip good' }, 'Verified') : null,
           p.acceptsEmergency ? el('span', { class: 'chip amber' }, 'Emergency callouts') : null),
         el('div', { class: 'row', style: 'margin:.35rem 0' },
@@ -162,14 +214,15 @@ function proCard(p, m) {
           el('small', {}, p.rating.count ? `${p.rating.average} · ${p.rating.count} reviews` : 'New to Foxers')),
         el('p', { class: 'muted', style: 'margin:.4rem 0' }, p.bio || tradeNames.join(', ')),
         el('div', { class: 'row' }, tradeNames.map((t) => el('span', { class: 'chip' }, t)))),
+
       el('div', { class: 'when' },
         p.nextSlot
           ? frag(
               el('small', {}, 'Next available'),
-              el('div', { style: 'font-weight:650' }, dateTime(p.nextSlot.start)),
+              el('div', { class: 'at' }, dateTime(p.nextSlot.start)),
               p.fromPrice ? el('small', {}, `from ${money(p.fromPrice, p.region)}`) : null)
           : el('small', {}, 'Quote only — ask for a callout'),
-        el('a', { class: 'btn primary sm', href: `/pro/${p.slug}`, style: 'margin-top:.5rem' },
+        el('span', { class: 'btn primary sm' },
           p.bookableCount ? 'See times' : 'Ask for a quote'))));
 }
 
@@ -189,8 +242,10 @@ export async function profile(mount, ctx) {
 
   clear(mount).append(frag(
     el('a', { href: '/find', class: 'muted' }, '← All tradespeople'),
-    el('h1', { style: 'margin-top:.6rem' }, p.business),
-    el('div', { class: 'row' },
+    el('div', { class: 'row', style: 'margin-top:.8rem;align-items:center' },
+      el('div', { class: 'monogram lg' }, initials(p.business)),
+      el('h1', { style: 'margin:0' }, p.business)),
+    el('div', { class: 'row', style: 'margin-top:.5rem' },
       stars(p.rating.average),
       el('small', {}, p.rating.count ? `${p.rating.average} from ${p.rating.count} reviews` : 'New to Foxers'),
       p.verified ? el('span', { class: 'chip good' }, 'Verified') : null,
@@ -200,7 +255,7 @@ export async function profile(mount, ctx) {
     el('div', { class: 'row' }, p.tradeNames.map((t) => el('span', { class: 'chip' }, t))),
 
     bookable.length ? frag(
-      el('h2', { style: 'margin-top:2rem' }, 'Book straight in'),
+      el('div', { class: 'section-head' }, el('h2', {}, 'Book straight in')),
       el('p', { class: 'muted' }, 'Fixed price, known duration. Pick a time and it is confirmed.'),
       el('div', { class: 'stack' }, bookable.map((s) => el('div', { class: 'card' },
         el('div', { class: 'row between' },
@@ -212,7 +267,7 @@ export async function profile(mount, ctx) {
             el('div', { style: 'font-weight:700;font-size:1.15rem' }, money(s.price, p.region)),
             el('a', { class: 'btn primary sm', href: `/book/${p.slug}/${s.id}`, style: 'margin-top:.4rem' }, 'See times'))))))) : null,
 
-    el('h2', { style: 'margin-top:2rem' }, 'Ask for a quote'),
+    el('div', { class: 'section-head' }, el('h2', {}, 'Ask for a quote')),
     el('p', { class: 'muted' },
       'Anything priced after a look at the job. Describe it and ',
       p.name.split(' ')[0], ' comes back with a written quote you can accept or decline.'),
@@ -221,7 +276,7 @@ export async function profile(mount, ctx) {
     el('a', { class: 'btn primary', href: `/ask?pro=${p.slug}` }, 'Describe the job'),
 
     p.reviews.length ? frag(
-      el('h2', { style: 'margin-top:2rem' }, 'Reviews'),
+      el('div', { class: 'section-head' }, el('h2', {}, 'Reviews')),
       el('p', { class: 'muted' }, 'Only left by customers with a completed, invoiced job on Foxers.'),
       el('div', { class: 'stack' }, p.reviews.map((r) => el('div', { class: 'card' },
         el('div', { class: 'row between' },
@@ -809,36 +864,38 @@ export async function myJobsView(mount, ctx) {
       el('a', { class: 'btn sm', href: '/find' }, 'Find someone')),
 
     waiting.length ? frag(
-      el('h2', {}, 'Waiting on you'),
+      el('div', { class: 'section-head', style: 'margin-top:1.4rem' }, el('h2', {}, 'Waiting on you')),
       el('div', { class: 'stack', style: 'margin-bottom:1.6rem' }, waiting.map(jobRow))) : null,
 
-    el('h2', {}, 'On the go'),
+    el('div', { class: 'section-head' }, el('h2', {}, 'On the go')),
     live.length ? el('div', { class: 'stack' }, live.map(jobRow))
       : empty('Nothing in progress.',
           el('a', { class: 'btn primary', href: '/find' }, 'Find a tradesperson')),
 
     done.length ? frag(
-      el('h2', { style: 'margin-top:1.6rem' }, 'Finished'),
+      el('div', { class: 'section-head' }, el('h2', {}, 'Finished')),
       el('div', { class: 'stack' }, done.map(jobRow))) : null));
 }
 
 function jobRow(j) {
   const region = j.pro?.region || 'IE';
   const href = `/j/${j.ref}?t=${encodeURIComponent(j.token)}`;
-  return el('a', { class: 'card', href, style: 'display:block;color:inherit' },
-    el('div', { class: 'row between' },
-      el('div', {},
-        el('h3', { style: 'margin:0' }, j.service || j.tradeName || 'Job'),
-        el('small', {}, j.pro ? j.pro.business : 'Open to matching tradespeople',
-          ' · ', el('span', { class: 'mono' }, j.ref))),
-      el('div', { class: 'row' },
-        j.awaitingYou ? el('span', { class: 'chip amber' }, 'quote to answer') : null,
-        statusChip(j.status))),
-    el('div', { class: 'row', style: 'margin-top:.6rem' },
-      j.at ? el('span', { class: 'chip' }, dateTime(j.at)) : null,
-      j.address ? el('span', { class: 'chip' }, j.address) : null,
-      j.invoice ? el('span', { class: `chip ${j.invoice.status === 'paid' ? 'good' : 'amber'}` },
-        `${j.invoice.number} · ${money(j.invoice.payable, region)}`) : null));
+  return el('a', { class: 'card job-row', href },
+    el('div', { class: 'job-icon' }, j.icon || '🧰'),
+    el('div', { style: 'min-width:0' },
+      el('div', { class: 'row between' },
+        el('h3', { style: 'margin:0' }, j.title),
+        el('div', { class: 'row' },
+          j.awaitingYou ? el('span', { class: 'chip amber' }, 'quote to answer') : null,
+          statusChip(j.status))),
+      el('small', {}, j.pro ? j.pro.business : 'Open to matching tradespeople',
+        j.tradeName ? ` · ${j.tradeName}` : '',
+        ' · ', el('span', { class: 'mono' }, j.ref)),
+      el('div', { class: 'row', style: 'margin-top:.6rem' },
+        j.at ? el('span', { class: 'chip' }, dateTime(j.at)) : null,
+        j.address ? el('span', { class: 'chip' }, j.address) : null,
+        j.invoice ? el('span', { class: `chip ${j.invoice.status === 'paid' ? 'good' : 'amber'}` },
+          `${j.invoice.number} · ${money(j.invoice.payable, region)}`) : null)));
 }
 
 export async function account(mount, ctx) {

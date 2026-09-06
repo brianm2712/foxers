@@ -447,9 +447,25 @@ on('GET', '/api/v1/me/jobs', async (req, res) => {
     const service = j.serviceId ? store.get('services', j.serviceId) : null;
     const quotes = store.filter('quotes', (q) => q.ref === j.ref);
     const invoice = store.find('invoices', (i) => i.ref === j.ref);
+    /*
+     * What to call this job on the customer's list. "Electrician" is the
+     * trade, not the job, and a list of five of those tells them nothing —
+     * so prefer the name of the work: the service booked, or the title the
+     * foxer put on the quote, and fall back to their own words.
+     */
+    const quoted = quotes.find((q) => q.status === 'accepted') || quotes[0];
+    const said = String(j.description || '').split(/(?<=[.!?])\s|,/)[0].trim();
+    const title = (service && service.name)
+      || (quoted && quoted.title)
+      || (said.length > 3 ? said : null)
+      || BY_KEY.get(j.trade)?.name
+      || 'Job';
+
     return {
       ...j,
       token: issueJobToken(j.ref),
+      title,
+      icon: j.trade ? BY_KEY.get(j.trade)?.icon : null,
       service: service ? service.name : null,
       tradeName: j.trade ? BY_KEY.get(j.trade)?.name : null,
       pro: pro ? { slug: pro.slug, business: pro.business, phone: pro.phone, region: pro.region } : null,

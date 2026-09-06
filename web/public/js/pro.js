@@ -199,10 +199,10 @@ export async function dashboard(mount, ctx) {
         'Sent, not yet accepted or declined.', '/dash/quotes', 'Review')),
 
     d.chases.length ? frag(
-      el('h2', { style: 'margin-top:1.6rem' }, 'Chase these'),
+      el('div', { class: 'section-head' }, el('h2', {}, 'Chase these')),
       el('div', { class: 'stack' }, d.chases.map(chaseCard))) : null,
 
-    el('h2', { style: 'margin-top:1.6rem' }, 'Next out the door'),
+    el('div', { class: 'section-head' }, el('h2', {}, 'Next out the door')),
     d.upcoming.length
       ? el('div', { class: 'stack' }, d.upcoming.map((b) => bookingCard(b, null)))
       : empty('Nothing booked yet.',
@@ -508,7 +508,7 @@ export async function quoteBuilder(mount, ctx) {
 
     field('What is this quote for', titleIn),
 
-    el('h2', { style: 'margin-top:1.4rem' }, 'When you could do it'),
+    el('div', { class: 'section-head' }, el('h2', {}, 'When you could do it')),
     el('p', { class: 'muted', style: 'margin:.2rem 0 .8rem' },
       'Accepting the quote books one of these outright, so only offer hours you would actually take.'),
     el('div', { class: 'card' },
@@ -516,7 +516,7 @@ export async function quoteBuilder(mount, ctx) {
         field('How long on site', minutesIn, 'Minutes. Changes which slots are long enough.')),
       slotsWrap),
 
-    el('h2', { style: 'margin-top:1.4rem' }, 'The price'),
+    el('div', { class: 'section-head' }, el('h2', {}, 'The price')),
     linesWrap,
     el('div', { class: 'row', style: 'margin:.6rem 0 1.2rem' }, addBtn),
 
@@ -610,12 +610,12 @@ export async function calendar(mount, ctx) {
 
   clear(mount).append(frag(
     heading('Diary', 'Booked work. Marking a job done is what lets you invoice it.'),
-    el('h2', {}, 'Coming up'),
+    el('div', { class: 'section-head', style: 'margin-top:1.4rem' }, el('h2', {}, 'Coming up')),
     upcoming.length ? el('div', { class: 'stack' }, upcoming.map((b) => bookingCard(b, reload)))
       : empty('Nothing booked. Customers can only book the services you have priced.',
           el('a', { class: 'btn', href: '/dash/services' }, 'Check your services')),
     past.length ? frag(
-      el('h2', { style: 'margin-top:1.6rem' }, 'Done and gone'),
+      el('div', { class: 'section-head' }, el('h2', {}, 'Done and gone')),
       el('div', { class: 'stack' }, past.slice(0, 20).map((b) => bookingCard(b, reload)))) : null));
 }
 
@@ -691,15 +691,15 @@ export async function money(mount, ctx) {
 
 
     ch.chases.length ? frag(
-      el('h2', {}, 'Chase these'),
+      el('div', { class: 'section-head', style: 'margin-top:1.4rem' }, el('h2', {}, 'Chase these')),
       el('div', { class: 'stack', style: 'margin-bottom:1.6rem' }, ch.chases.map((c) => chaseCard(c, reload)))) : null,
 
-    el('h2', {}, 'Outstanding'),
+    el('div', { class: 'section-head' }, el('h2', {}, 'Outstanding')),
     outstanding.length ? invoiceTable(outstanding, reload, m.paymentMethods || [])
       : empty('Nothing outstanding. Every invoice you have raised is paid.'),
 
     paid.length ? frag(
-      el('h2', { style: 'margin-top:1.6rem' }, 'Paid'),
+      el('div', { class: 'section-head' }, el('h2', {}, 'Paid')),
       invoiceTable(paid, reload, m.paymentMethods || [])) : null));
 }
 
@@ -833,11 +833,11 @@ export async function services(mount, ctx) {
       : empty('No services yet. Add one below and you become bookable.'),
 
     suggestions.length ? frag(
-      el('h2', { style: 'margin-top:1.6rem' }, 'Common in your trades'),
+      el('div', { class: 'section-head' }, el('h2', {}, 'Common in your trades')),
       el('p', { class: 'muted' }, 'Tap one to fill the form, then set your own price.'),
       el('div', { class: 'row' }, suggestions.slice(0, 12))) : null,
 
-    el('h2', { style: 'margin-top:1.6rem' }, 'Add'),
+    el('div', { class: 'section-head' }, el('h2', {}, 'Add')),
     addForm));
 }
 
