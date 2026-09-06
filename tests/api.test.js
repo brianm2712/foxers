@@ -586,3 +586,26 @@ test('a deposit can only be settled once', async () => {
   const view = await api('GET', `/api/v1/jobs/${job.ref}?t=${encodeURIComponent(job.token)}`, undefined, { token: null });
   assert.strictEqual(view.body.deposit.status, 'captured', 'and the deposit went exactly one way');
 });
+
+test('a job that was asked for and then booked appears once, not twice', async () => {
+  // Accepting a quote creates a booking sharing the request's reference, so
+  // the same job lives in both collections. The customer must see one row.
+  const job = await askFor('Shaver socket wanted in the bathroom, off the light circuit.');
+  const request = (await api('GET', '/api/v1/pro/requests')).body.requests.find((r) => r.ref === job.ref);
+  const free = await api('GET', '/api/v1/pro/slots?minutes=60&days=14');
+  const when = free.body.days.flatMap((d) => d.slots)[0].start;
+
+  const q = await api('POST', '/api/v1/pro/quotes', {
+    requestId: request.id, title: 'Shaver socket', minutes: 60, slots: [when],
+    lines: [{ kind: 'labour', description: 'Fit shaver socket', qty: 1, unitPrice: 110, vatClass: 'reduced' }],
+  });
+  await api('POST', `/api/v1/jobs/${job.ref}/accept?t=${encodeURIComponent(job.token)}`,
+    { quoteId: q.body.id, start: when }, { token: null });
+
+  const mine = (await api('GET', '/api/v1/me/jobs', undefined, { token: customerToken }))
+    .body.jobs.filter((j) => j.ref === job.ref);
+  assert.strictEqual(mine.length, 1, 'one job, one row');
+  assert.strictEqual(mine[0].status, 'scheduled', 'showing how far along it actually is');
+  assert.strictEqual(mine[0].at, when, 'and the hour that was agreed');
+  assert.match(mine[0].description, /Shaver socket wanted/, 'while keeping what was asked for');
+});

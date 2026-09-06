@@ -291,19 +291,44 @@ function resolveCustomer(store, input) {
   return upsertCustomer(store, input.customer || {});
 }
 
-/* Everything this customer has going on, newest first. */
+/*
+ * Everything this customer has going on, newest first, one row per job.
+ *
+ * Accepting a quote creates a booking that shares the request's reference, so
+ * the same job exists in both collections. They are merged rather than listed
+ * twice: the request carries what was asked for and when, the booking carries
+ * the agreed hour and how far along it is.
+ */
 function jobsForCustomer(store, customerId) {
-  const rows = [
-    ...store.filter('bookings', (b) => b.customerId === customerId)
-      .map((b) => ({ kind: 'booking', ref: b.ref, status: b.status, proId: b.proId,
-        at: b.start, createdAt: b.acceptedAt || b.start, price: b.price,
-        serviceId: b.serviceId, address: b.address })),
-    ...store.filter('requests', (r) => r.customerId === customerId)
-      .map((r) => ({ kind: 'request', ref: r.ref, status: r.status, proId: r.proId,
-        at: null, createdAt: r.createdAt, trade: r.trade, urgency: r.urgency,
-        description: r.description, address: r.address })),
-  ];
-  return rows.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  const byRef = new Map();
+
+  for (const r of store.filter('requests', (r) => r.customerId === customerId)) {
+    byRef.set(r.ref, {
+      kind: 'request', ref: r.ref, status: r.status, proId: r.proId,
+      at: null, createdAt: r.createdAt, trade: r.trade, urgency: r.urgency,
+      description: r.description, address: r.address,
+    });
+  }
+
+  for (const b of store.filter('bookings', (b) => b.customerId === customerId)) {
+    const asked = byRef.get(b.ref);
+    // The booking's status is always the more advanced of the two, and its
+    // start is the only place the agreed hour lives.
+    byRef.set(b.ref, {
+      ...(asked || {}),
+      kind: asked ? 'quoted' : 'booking',
+      ref: b.ref,
+      status: b.status,
+      proId: b.proId,
+      at: b.start,
+      createdAt: asked ? asked.createdAt : (b.acceptedAt || b.start),
+      price: b.price,
+      serviceId: b.serviceId,
+      address: b.address || asked?.address || '',
+    });
+  }
+
+  return [...byRef.values()].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 }
 
 function createBooking(store, secretIssuer, input) {
