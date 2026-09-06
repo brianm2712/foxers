@@ -98,6 +98,17 @@ const limits = {
 };
 setInterval(() => Object.values(limits).forEach((l) => l.sweep()), 60_000).unref();
 
+/*
+ * Card holds last about a week, and a request whose hold has lapsed is closed
+ * rather than left looking live — see `expireStaleHolds`. Quarter-hourly is
+ * far finer than a seven-day window needs; the cost is a scan of one array.
+ * `createQuote` re-checks anyway, so a request cannot be quoted in the gap.
+ */
+const sweepHolds = () => D.expireStaleHolds(store)
+  .catch((err) => console.error('[foxxers] hold sweep failed:', err.message));
+setInterval(sweepHolds, 15 * 60_000).unref();
+sweepHolds();
+
 const issueJobToken = (ref) => auth.issueJobToken(SECRET, ref);
 
 /* ---- router ---------------------------------------------------------- */
@@ -259,14 +270,20 @@ function depositView(request) {
   const d = request?.depositId ? store.get('payments', request.depositId) : null;
   if (!d) return null;
   const said = {
-    held: 'Held. It comes off the price if you accept the quote.',
+    pending: 'Waiting on your card. Nothing has been taken yet.',
+    held: 'Held on your card, not charged. It is released if you go ahead.',
+    released: 'Released — you were never charged it.',
     credited: 'Credited — it has come off what you owe.',
     captured: 'Kept by the tradesperson for pricing the job.',
+    expired: 'The hold lapsed after a week, so this request has closed.',
     refunded: 'Refunded.',
+    failed: 'Your card was not accepted.',
   };
   return {
     amount: d.amount, currency: d.currency, status: d.status,
     note: said[d.status] || null,
+    // Only while there is something for them to do about it.
+    checkoutUrl: d.status === 'pending' ? d.checkoutUrl || null : null,
     settled: !!d.moved,
   };
 }
@@ -375,8 +392,11 @@ on('POST', '/api/v1/requests', async (req, res) => {
   const token = issueJobToken(request.ref);
   H.json(res, 201, {
     ref: request.ref, token, job: jobView(request.ref),
+    // The checkout link matters most right here: on a real rail the hold does
+    // not exist until the customer has been through Stripe's page.
     deposit: deposit ? { id: deposit.id, amount: deposit.amount, currency: deposit.currency,
-      status: deposit.status, settled: deposit.moved } : null,
+      status: deposit.status, checkoutUrl: deposit.checkoutUrl || null,
+      settled: deposit.moved } : null,
   });
 });
 
@@ -546,11 +566,40 @@ on('POST', '/api/v1/webhooks/stripe', async (req, res) => {
       store.log('webhook.unknown', String(session.id || ''), { event: type });
       return H.json(res, 200, { ok: true, matched: false });
     }
+    /*
+     * A deposit goes through the same checkout page, but completing it
+     * authorises rather than charges — `payment_status` stays unpaid, and the
+     * event that says the money is genuinely held is the one below. Marking
+     * an invoice paid from here would be wrong twice over: a deposit has no
+     * invoice, and nothing has been captured.
+     */
+    if (payment.kind === 'deposit') {
+      return H.json(res, 200, { ok: true, matched: true, ignored: 'deposit_authorised' });
+    }
     if (session.payment_status && session.payment_status !== 'paid') {
       return H.json(res, 200, { ok: true, matched: true, ignored: session.payment_status });
     }
     const { invoice } = D.completePayment(store, payment.id);
     store.log('webhook.applied', payment.id, { event: type, invoice: invoice.number });
+    return H.json(res, 200, { ok: true, matched: true });
+  }
+
+  /*
+   * The money is genuinely held. This is the only thing that moves a deposit
+   * from `pending` to `held`: the customer completing a checkout page tells us
+   * they finished a form, not that their bank agreed to reserve the money.
+   */
+  if (type === 'payment_intent.amount_capturable_updated') {
+    const pi = event.data?.object || {};
+    const payment = pi.id
+      ? store.find('payments', (p) => p.kind === 'deposit' && p.paymentIntentRef === pi.id)
+      : null;
+    if (!payment) {
+      store.log('webhook.unknown', String(pi.id || ''), { event: type });
+      return H.json(res, 200, { ok: true, matched: false });
+    }
+    pay.settleDeposit(store, payment.id, { ok: true, providerRef: payment.providerRef });
+    store.log('webhook.applied', payment.id, { event: type, amount: pi.amount_capturable });
     return H.json(res, 200, { ok: true, matched: true });
   }
 
@@ -1082,6 +1131,11 @@ on('GET', '/api/v1/pro/deposits', async (req, res) => {
   }));
   H.json(res, 200, {
     earned: round2(rows.filter((r) => r.status === 'captured').reduce((s, r) => s + r.amount, 0)),
+    // Released is the happy path now; credited is the older charge-then-credit
+    // rule, and is kept so a foxxer's history does not lose money it counted.
+    released: round2(rows
+      .filter((r) => r.status === 'released' || r.status === 'credited')
+      .reduce((s, r) => s + r.amount, 0)),
     credited: round2(rows.filter((r) => r.status === 'credited').reduce((s, r) => s + r.amount, 0)),
     deposits: rows.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)),
   });

@@ -558,8 +558,12 @@ test('a card payment produces a Stripe-hosted checkout, and does not mark it pai
    * Revenue on their behalf.
    */
   assert.strictEqual(sess.body['line_items[0][price_data][unit_amount]'], '16830');
-  // No fee is configured on this instance, so nothing may be deducted.
-  assert.strictEqual(sess.body['payment_intent_data[application_fee_amount]'], undefined);
+  /*
+   * The platform's 2%, taken from the €168.30 the customer pays: €3.37. It is
+   * the decided default rather than something this instance configured, so it
+   * is pinned here — a change to it should have to be made on purpose.
+   */
+  assert.strictEqual(sess.body['payment_intent_data[application_fee_amount]'], '337');
 });
 
 const lastSession = () => seen.filter((s) => s.url === '/v1/checkout/sessions').pop();

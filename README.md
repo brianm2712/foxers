@@ -141,15 +141,18 @@ which is the thing a WhatsApp voice note never produces.
 
 ### Asking, in full
 
-1. **The customer sends a request, and €5 is taken.** Not to accept — to ask.
+1. **The customer sends a request, and €5 is HELD on their card.** Not taken — held, and
+   not to accept but to ask.
 2. **The foxxer prices it and offers up to three genuinely free hours**, checked against
    their real availability at the moment of sending.
 3. **The customer accepts one of those hours.** Accepting *is* the booking: it lands in
    the diary at that instant, and that hour immediately stops being offerable to anyone
    else. A price agreed without a date is the failure this app exists to prevent.
-   - **Declined instead?** The foxxer keeps the €5, for pricing a job that went nowhere.
-   - **Accepted?** The €5 is credited against the invoice, so it costs a genuine
-     customer nothing at all.
+   - **Declined instead?** The hold is captured and transferred to the foxxer, for
+     pricing a job that went nowhere.
+   - **Accepted?** The hold is cancelled. Nothing is ever charged, the invoice is for
+     the quoted price with no €5 line on it, and a genuine customer pays no fee for the
+     privilege of having asked.
 4. **The job is done, and the balance is taken at the door** — card reader, Apple or
    Google Pay, Revolut, transfer or cash.
 5. **The receipt is issued in the same request as the payment**, because they are one
@@ -173,9 +176,11 @@ Three things that are easy to get backwards, and are tested because of it:
 
 - **VAT is computed per line at that line's own rate**, on the net.
 - **Withholding is computed on the net, never on the VAT.**
-- **A credited deposit is money on account, not a discount.** VAT is charged on the full
-  price; the €5 only reduces what is left to collect. Treating it as a discount would
-  understate the VAT on every job that began as a request.
+- **A deposit is never a discount.** On the current rule the €5 is released rather than
+  charged, so the invoice is for the full price and there is nothing to credit. Deposits
+  taken under the older charge-then-credit rule still settle as money on account: VAT is
+  charged on the full price and the €5 only reduces what is left to collect. Treating it
+  as a discount either way would understate the VAT on every job that began as a request.
 
 Invoice numbers are sequential per foxxer with no gaps, and the counter advances at issue
 and never at draft — a number derived from a timestamp is not a sequence, and neither is
@@ -235,7 +240,9 @@ invoice and pocketed by the foxxer:
 ```
 pending → held       the customer actually paid
         → failed     they did not
-held    → credited   quote accepted; comes off the invoice
+held    → released   quote accepted; the hold is cancelled, nothing is charged
+held    → credited   the older rule: the €5 was taken and comes off the invoice
+held    → expired    nobody answered inside the week a card hold lasts
         → captured   quote declined; the foxxer keeps it
         → refunded   nobody quoted, so nobody earned it
 ```
@@ -272,8 +279,10 @@ FOXXERS_PAYMENTS=stripe
 FOXXERS_STRIPE_SECRET_KEY=sk_test_...       # sk_live_ switches it to live, nothing else to set
 FOXXERS_STRIPE_WEBHOOK_SECRET=whsec_...     # signing secret for the webhook
 FOXXERS_PUBLIC_URL=https://foxxers.com      # where Stripe returns them to
-FOXXERS_PLATFORM_FEE_BPS=0                  # the platform's cut. Zero until decided
+FOXXERS_PLATFORM_FEE_BPS=200                # the platform's cut, 2% by default
 FOXXERS_PLATFORM_FEE_CENTS=0
+FOXXERS_HOLD_DAYS=7                         # how long a deposit hold lives before the
+                                            # request expires with it
 ```
 
 Point the Stripe webhook at `POST /api/v1/webhooks/stripe`.
@@ -429,11 +438,10 @@ each screen on each platform is built from these routes.
   meant to be built against, and `web/public/js/api.js` is the file to mirror.
 - **A verified payment path.** Stripe onboarding has had a real round trip; no charge,
   deposit or transfer has. The Revolut adapter has never spoken to Revolut at all.
-- **Stripe Connect phases 2–4.** Onboarding is built. Taking an invoice as a destination
-  charge, authorising and capturing deposits, and going live are scoped in
-  `docs/stripe-connect-plan.md` — along with three decisions still open: the platform
-  fee, whether the €5 is charged or merely held, and what happens when a 7-day
-  authorisation lapses mid-quote.
+- **Stripe Connect phase 4, going live.** Onboarding, invoice payments and deposits are
+  built; the platform profile, the agreement foxxers accept, fee disclosure and the
+  test-mode run of every path are scoped in `docs/stripe-connect-plan.md`. The five
+  decisions that shaped the rest are all made and written up there.
 - **Photos on a request.** The field exists and is always empty.
 - **Refunding a deposit on a request nobody ever quoted.** The state and the transition
   exist; nothing schedules it.

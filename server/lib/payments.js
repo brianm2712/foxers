@@ -50,15 +50,25 @@ const METHOD_BY_KEY = new Map(METHODS.map((m) => [m.key, m]));
  * outcome when the provider says so. The `manual` provider skips straight to
  * `held` because nothing has to happen; Revolut does not.
  *
- * `held` is the only state money can leave from, and it can only go one of
- * three ways — which is what stops a deposit being both credited against an
- * invoice and pocketed by the foxxer.
+ * `held` is the only state money can leave from, and it can only go one way —
+ * which is what stops a deposit being both released to the customer and
+ * pocketed by the foxxer.
+ *
+ * `released` is the happy path: the quote was accepted, the authorisation is
+ * cancelled, and the customer is never charged at all. `credited` is the older
+ * rule — the €5 taken and knocked off the invoice — kept because deposits
+ * taken under it still have to settle.
+ *
+ * `expired` is a hold that lapsed before anyone answered. Card authorisations
+ * last about a week; see `expireStaleHolds` in domain.js.
  */
 const DEPOSIT_STATES = {
-  pending: ['held', 'failed', 'refunded'],
-  held: ['credited', 'captured', 'refunded'],
+  pending: ['held', 'failed', 'refunded', 'expired'],
+  held: ['credited', 'captured', 'refunded', 'released', 'expired'],
   credited: [],
   captured: [],
+  released: [],
+  expired: [],
   refunded: [],
   failed: [],
 };
@@ -141,14 +151,11 @@ function depositAmount(region) {
   return DEPOSIT_AMOUNT[region === 'UK' ? 'UK' : 'IE'];
 }
 
-async function holdDeposit(store, { customerId, region, providerName, reference }) {
-  // Deposits stay on `manual` until a rail declares it takes them: a real one
-  // returns `pending`, and the quote-accept path cannot yet credit a deposit
-  // that has not reached `held`. Phase 3 is where that gets handled.
+async function holdDeposit(store, { customerId, region, providerName, reference, ref }) {
   const provider = railFor('deposit', providerName);
   const amount = depositAmount(region);
   const currency = currencyFor(region);
-  const result = await provider.hold({ amount, currency, reference });
+  const result = await provider.hold({ amount, currency, reference, ref });
 
   // A provider that needs the customer to do something hands back `pending`
   // and somewhere to send them. One that does not says `held` and is done.
@@ -165,6 +172,9 @@ async function holdDeposit(store, { customerId, region, providerName, reference 
     method: 'card',
     provider: provider.key,
     providerRef: result.ref,
+    // The events that say a hold exists name the PaymentIntent, never the
+    // checkout session, so both references have to be kept.
+    paymentIntentRef: result.paymentIntent || null,
     checkoutUrl: result.checkoutUrl || null,
     moved: !!result.moved,
     heldAt: new Date().toISOString(),
@@ -202,17 +212,60 @@ function transitionDeposit(store, paymentId, to, extra = {}) {
   });
 }
 
-/** The quote was declined: the foxxer is paid for the time they spent on it. */
+/**
+ * The quote was declined: the foxxer is paid for the time they spent on it.
+ *
+ * Capturing takes the money onto the PLATFORM, because that is where an open
+ * request's deposit was authorised. Getting it to the foxxer is a second
+ * movement, and skipping it would leave their €5 sitting on the platform
+ * looking, from every screen in the app, as though they had been paid.
+ */
 async function captureDeposit(store, paymentId, proId) {
   const payment = store.get('payments', paymentId);
   if (!payment) throw new PaymentError('No such payment', 404, 'not_found');
   const provider = providerFor(payment.provider);
-  const result = await provider.capture({ payment });
-  return transitionDeposit(store, paymentId, 'captured',
+  const pro = proId ? store.get('pros', proId) : null;
+  const result = await provider.capture({ payment, destination: pro?.stripeAccountId || null });
+  return transitionDeposit(store, paymentId, 'captured', {
+    proId,
+    providerRef: result.ref,
+    transferRef: result.transferRef || null,
+    moved: !!result.moved,
+  });
+}
+
+/**
+ * The quote was accepted, so the authorisation is cancelled and the customer
+ * is never charged. Nothing comes off the invoice because nothing was taken —
+ * which is the whole point of holding it rather than charging it.
+ */
+async function releaseDeposit(store, paymentId, proId) {
+  const payment = store.get('payments', paymentId);
+  if (!payment) throw new PaymentError('No such payment', 404, 'not_found');
+  const provider = providerFor(payment.provider);
+  const result = await provider.refund({ payment });
+  return transitionDeposit(store, paymentId, 'released',
     { proId, providerRef: result.ref, moved: !!result.moved });
 }
 
-/** The quote was accepted: it comes off what is owed at the end instead. */
+/**
+ * Nobody answered inside the week a card hold lasts. Stripe lets it lapse on
+ * its own; cancelling is a courtesy that must not be able to fail the sweep,
+ * since the hold is gone either way and the ledger has to say so.
+ */
+async function expireDeposit(store, paymentId) {
+  const payment = store.get('payments', paymentId);
+  if (!payment) throw new PaymentError('No such payment', 404, 'not_found');
+  const provider = providerFor(payment.provider);
+  try {
+    await provider.refund({ payment });
+  } catch (err) {
+    store.log('deposit.expire.cancel_failed', paymentId, { error: err.message });
+  }
+  return transitionDeposit(store, paymentId, 'expired', { moved: false });
+}
+
+/** The older rule: the €5 was taken, and comes off what is owed at the end. */
 function creditDeposit(store, paymentId, proId) {
   return transitionDeposit(store, paymentId, 'credited', { proId });
 }
@@ -273,6 +326,7 @@ async function takePayment(store, { invoice, pro, amount, method, providerName }
 module.exports = {
   PaymentError, METHODS, METHOD_BY_KEY, DEPOSIT_AMOUNT, DEPOSIT_STATES,
   depositAmount, currencyFor, holdDeposit, settleDeposit, captureDeposit,
-  creditDeposit, refundDeposit, takePayment, registerProvider, providerFor,
+  releaseDeposit, expireDeposit, creditDeposit, refundDeposit,
+  takePayment, registerProvider, providerFor,
   railFor, isOnline, availableMethods, manual,
 };

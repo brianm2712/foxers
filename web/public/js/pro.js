@@ -775,9 +775,9 @@ export async function money(mount, ctx) {
         el('div', { class: 'v' }, cash(dep.earned)),
         el('small', {}, 'quotes that were turned down')),
       el('div', { class: 'stat' },
-        el('div', { class: 'k' }, 'Deposits credited'),
-        el('div', { class: 'v' }, cash(dep.credited)),
-        el('small', {}, 'came off jobs that went ahead'))),
+        el('div', { class: 'k' }, 'Deposits released'),
+        el('div', { class: 'v' }, cash(dep.released)),
+        el('small', {}, 'jobs that went ahead — never charged'))),
 
 
     ch.chases.length ? frag(

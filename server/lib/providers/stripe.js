@@ -35,9 +35,17 @@
  *
  * Amounts are integer minor units.
  *
- * NOT YET RUN AGAINST STRIPE. Written to the documented API and exercised
- * against a mock that refuses what the real one refuses. It needs a test-mode
- * key and a real round trip before it sees a card.
+ * HOW MUCH OF THIS HAS MET REAL STRIPE
+ *
+ * Account creation, the onboarding link, the account read and a real connect
+ * webhook have all been round-tripped against a test sandbox — that is what
+ * moved this file to Accounts v2 and taught the webhook handler to take both
+ * event families.
+ *
+ * The MONEY paths have not. No charge, capture, cancel or transfer has ever
+ * been made against Stripe; they are exercised only against a mock that
+ * refuses what the real one refuses. Treat them as unproven until Phase 4's
+ * test-mode run.
  */
 
 const crypto = require('crypto');
@@ -48,9 +56,19 @@ const API = 'https://api.stripe.com';
  * rather than falling back. */
 const API_VERSION = '2026-04-22.dahlia';
 const TIMEOUT_MS = 15_000;
+/* 2% — the decided platform fee. See docs/stripe-connect-plan.md, decision 1. */
+const DEFAULT_FEE_BPS = 200;
 
 const toMinor = (amount) => Math.round(Number(amount) * 100);
 const fromMinor = (minor) => Math.round(Number(minor)) / 100;
+
+/*
+ * Capturing, cancelling and refunding all act on the PaymentIntent, but what
+ * is stored against a payment is the checkout SESSION id — that is what the
+ * session-completed event names. The intent is recorded alongside it; falling
+ * back to `providerRef` keeps payments taken before that was true working.
+ */
+const intentOf = (payment) => payment.paymentIntentRef || payment.providerRef;
 
 /* Stripe's flavour of form encoding: nested[keys][like]=this, arrays by index. */
 function form(data, prefix = '', out = []) {
@@ -75,14 +93,25 @@ class StripeError extends Error {
   }
 }
 
-function create({ secretKey, base, publicUrl, feeBps = 0, feeFlat = 0 } = {}) {
+/* An unset variable and one set to the empty string mean the same thing here:
+ * nobody said. Reading `''` as zero would silently waive the platform fee. */
+function envNumber(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function create({ secretKey, base, publicUrl, feeBps = DEFAULT_FEE_BPS, feeFlat = 0 } = {}) {
   const key = secretKey || process.env.FOXXERS_STRIPE_SECRET_KEY;
   const root = (base || process.env.FOXXERS_STRIPE_BASE || API).replace(/\/+$/, '');
   const site = (publicUrl || process.env.FOXXERS_PUBLIC_URL || '').replace(/\/+$/, '');
-  /* The platform's cut, in basis points and cents. Zero unless configured, so
-   * an instance that has not decided on a fee does not silently take one. */
-  const bps = Number(process.env.FOXXERS_PLATFORM_FEE_BPS ?? feeBps) || 0;
-  const flat = Number(process.env.FOXXERS_PLATFORM_FEE_CENTS ?? feeFlat) || 0;
+  /* The platform's cut, in basis points and cents. 2% by decision, overridable
+   * per instance; see docs/stripe-connect-plan.md. Stripe's own ~1.5% + €0.25
+   * comes off the foxxer's side separately, so this is not the whole of what
+   * they lose — worth remembering before it is raised. */
+  const bps = envNumber('FOXXERS_PLATFORM_FEE_BPS', feeBps);
+  const flat = envNumber('FOXXERS_PLATFORM_FEE_CENTS', feeFlat);
   if (!key) throw new Error('Stripe needs FOXXERS_STRIPE_SECRET_KEY');
 
   async function call(method, path, data, { idempotencyKey, onBehalfOf } = {}) {
@@ -121,36 +150,58 @@ function create({ secretKey, base, publicUrl, feeBps = 0, feeFlat = 0 } = {}) {
   const platformFee = (amount) => Math.max(0, Math.round(toMinor(amount) * bps / 10_000) + flat);
 
   /*
-   * A PaymentIntent is what the app's SDK completes. The client secret is
-   * what makes it seamless — Apple Pay and Google Pay are one tap on it, and
-   * the customer never leaves the app.
+   * A Stripe-HOSTED checkout page, not a card form on our own pages. That is
+   * the decision the footer forces: seamless in-app entry means loading
+   * js.stripe.com, which is a third-party request that also fingerprints. One
+   * redirect out costs a little polish and keeps the promise.
+   *
+   * Both kinds of money go through here. `captureMode: 'manual'` is what makes
+   * a deposit an authorisation rather than a charge — the customer completes
+   * the same page, and the money is held instead of taken.
    */
-  async function intent({ amount, currency, captureMode, reference, destination, description }) {
-    const body = {
-      amount: toMinor(amount),
-      currency: String(currency).toLowerCase(),
-      capture_method: captureMode,
-      description,
-      automatic_payment_methods: { enabled: true },
-      metadata: { foxxers_ref: reference || '' },
-    };
-    // Destination charge: the money is routed to the foxxer as it is taken.
-    if (destination) {
-      body.transfer_data = { destination };
-      body.on_behalf_of = destination;
-      const fee = platformFee(amount);
-      if (fee > 0) body.application_fee_amount = fee;
-    }
-    const pi = await call('POST', '/v1/payment_intents', body,
-      { idempotencyKey: reference ? `pi_${reference}` : undefined });
+  async function session({
+    amount, currency, reference, destination, ref, name, description, captureMode,
+  }) {
+    const fee = destination ? platformFee(amount) : 0;
+    const back = site && ref ? `${site}/j/${encodeURIComponent(ref)}` : undefined;
+    const cs = await call('POST', '/v1/checkout/sessions', {
+      mode: 'payment',
+      line_items: [{
+        quantity: 1,
+        price_data: {
+          currency: String(currency).toLowerCase(),
+          unit_amount: toMinor(amount),
+          product_data: { name },
+        },
+      }],
+      payment_intent_data: {
+        description,
+        ...(captureMode ? { capture_method: captureMode } : {}),
+        // A destination charge routes the money to the foxxer as it is taken.
+        // A deposit has none: an open request has no foxxer yet.
+        ...(destination ? { transfer_data: { destination }, on_behalf_of: destination } : {}),
+        ...(fee > 0 ? { application_fee_amount: fee } : {}),
+      },
+      client_reference_id: ref || undefined,
+      success_url: back && `${back}?paid=1`,
+      cancel_url: back,
+      // How the webhook finds the payment this session belongs to. The session
+      // id is not known to us until after it is created.
+      metadata: { foxxers_ref: ref || '', foxxers_payment: reference || '' },
+    }, { idempotencyKey: reference ? `cs_${reference}` : undefined });
+
     return {
-      ref: pi.id,
-      clientSecret: pi.client_secret,
-      checkoutUrl: site && reference ? `${site}/j/${encodeURIComponent(reference)}` : null,
+      ref: cs.id,
+      // Kept because a hold is settled and captured by PaymentIntent id: the
+      // events that say money is held name the intent, never the session.
+      paymentIntent: cs.payment_intent || null,
+      checkoutUrl: cs.url,
+      // Nobody has paid anything yet. A customer arriving back on the success
+      // page is not evidence; only the webhook is.
       state: 'pending',
-      amount: fromMinor(pi.amount),
-      currency: (pi.currency || currency).toUpperCase(),
+      amount, currency: String(currency).toUpperCase(),
       destination: destination || null,
+      fee,
       moved: false,
     };
   }
@@ -160,16 +211,19 @@ function create({ secretKey, base, publicUrl, feeBps = 0, feeFlat = 0 } = {}) {
 
     /*
      * The deposit. Authorised on the platform because an open request has no
-     * foxxer yet; captured only if a quote is declined.
+     * foxxer yet; captured only if a quote is declined, and cancelled outright
+     * if it is accepted — so on the happy path no money moves and nobody pays
+     * a fee for it.
      */
-    hold: ({ amount, currency, reference }) => intent({
-      amount, currency, captureMode: 'manual', reference,
+    hold: ({ amount, currency, reference, ref }) => session({
+      amount, currency, reference, ref, captureMode: 'manual',
+      name: 'Foxxers request deposit',
       description: 'Foxxers deposit — released if you go ahead with the quote',
     }),
 
     /* The quote was declined. Take the hold, then pass it to the foxxer. */
     async capture({ payment, destination }) {
-      const pi = await call('POST', `/v1/payment_intents/${encodeURIComponent(payment.providerRef)}/capture`,
+      const pi = await call('POST', `/v1/payment_intents/${encodeURIComponent(intentOf(payment))}/capture`,
         {}, { idempotencyKey: `cap_${payment.id}` });
 
       let transfer = null;
@@ -194,69 +248,31 @@ function create({ secretKey, base, publicUrl, feeBps = 0, feeFlat = 0 } = {}) {
     async refund({ payment }) {
       if (payment.status === 'captured') {
         const r = await call('POST', '/v1/refunds',
-          { payment_intent: payment.providerRef, amount: toMinor(payment.amount) },
+          { payment_intent: intentOf(payment), amount: toMinor(payment.amount) },
           { idempotencyKey: `rf_${payment.id}` });
         return { ref: r.id, moved: true };
       }
-      const pi = await call('POST', `/v1/payment_intents/${encodeURIComponent(payment.providerRef)}/cancel`,
+      const pi = await call('POST', `/v1/payment_intents/${encodeURIComponent(intentOf(payment))}/cancel`,
         {}, { idempotencyKey: `cn_${payment.id}` });
-      return { ref: pi.id, moved: true };
+      // Cancelling a hold moves nothing — that is the point of it. Saying
+      // otherwise would put a €5 movement in the ledger that never happened.
+      return { ref: pi.id, moved: false };
     },
 
     /* What this rail can actually take. Anything else moved somewhere else and
-     * is only being recorded — see `railFor` in payments.js. Deposits are
-     * absent until phase 3 can handle one that starts out pending. */
-    handles: ['card', 'apple_pay', 'google_pay'],
+     * is only being recorded — see `railFor` in payments.js. */
+    handles: ['deposit', 'card', 'apple_pay', 'google_pay'],
 
     /*
      * The invoice. The foxxer is known, so it is a destination charge that
      * routes to them as it is taken and the platform fee comes off
-     * automatically.
-     *
-     * A Stripe-HOSTED checkout page, not a card form on our own pages. That is
-     * the decision the footer forces: seamless in-app entry means loading
-     * js.stripe.com, which is a third-party request that also fingerprints.
-     * One redirect out costs a little polish and keeps the promise.
+     * automatically. Captured on completion, unlike a deposit.
      */
-    async charge({ amount, currency, reference, destination, ref }) {
-      const fee = destination ? platformFee(amount) : 0;
-      const back = site && ref ? `${site}/j/${encodeURIComponent(ref)}` : undefined;
-      const session = await call('POST', '/v1/checkout/sessions', {
-        mode: 'payment',
-        line_items: [{
-          quantity: 1,
-          price_data: {
-            currency: String(currency).toLowerCase(),
-            unit_amount: toMinor(amount),
-            product_data: { name: `Invoice ${reference || ''}`.trim() },
-          },
-        }],
-        payment_intent_data: {
-          description: `Foxxers — ${reference || 'job'}`,
-          ...(destination ? { transfer_data: { destination }, on_behalf_of: destination } : {}),
-          ...(fee > 0 ? { application_fee_amount: fee } : {}),
-        },
-        client_reference_id: ref || undefined,
-        success_url: back && `${back}?paid=1`,
-        cancel_url: back,
-        // How the webhook finds the payment this session belongs to. The
-        // session id is not known to us until after it is created.
-        metadata: { foxxers_ref: ref || '', foxxers_payment: reference || '' },
-      }, { idempotencyKey: reference ? `cs_${reference}` : undefined });
-
-      return {
-        ref: session.id,
-        paymentIntent: session.payment_intent || null,
-        checkoutUrl: session.url,
-        // Nobody has paid anything yet. A customer arriving back on the
-        // success page is not evidence; only the webhook is.
-        state: 'pending',
-        amount, currency: String(currency).toUpperCase(),
-        destination: destination || null,
-        fee,
-        moved: false,
-      };
-    },
+    charge: ({ amount, currency, reference, destination, ref }) => session({
+      amount, currency, reference, destination, ref,
+      name: `Invoice ${reference || ''}`.trim(),
+      description: `Foxxers — ${reference || 'job'}`,
+    }),
 
     /* ---- connected accounts ------------------------------------------- */
 

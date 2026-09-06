@@ -19,25 +19,42 @@ That is the whole reason for the change. Everything below follows from it.
 
 ## The five decisions I cannot make for you
 
-**Two of them are made.** Decision 4 is *visible but unpayable* and decision 5 is
-*Stripe-hosted checkout*; both are written up in place below and Phase 1 is built
-around them. Decisions 1, 2 and 3 are still open and are not needed until Phase 2.
+**All five are now made** (2026-09-06) and each one is built and pinned by a
+test. They are kept below with their reasoning, because the reasoning is what a
+future change has to argue against.
 
-### 1. What is the platform fee?
+### 1. What is the platform fee?  — DECIDED: 2%
 
-Currently zero, and it stays zero until set — an instance that has not decided
-should not silently take a cut. Set as basis points and/or cents:
-`FOXXERS_PLATFORM_FEE_BPS`, `FOXXERS_PLATFORM_FEE_CENTS`.
+**200 basis points, and it is the default rather than something an instance has
+to configure.** `DEFAULT_FEE_BPS` in `providers/stripe.js`; still overridable
+per instance with `FOXXERS_PLATFORM_FEE_BPS` and `FOXXERS_PLATFORM_FEE_CENTS`.
 
-On a €421.84 job: 5% is €21.09, 2% is €8.44, €2 flat is €2. Stripe's own fee
-(~1.5% + €0.25 on EEA cards) comes off the foxxer's side, not yours.
+On a €421.84 job that is €8.44. 5% would have been €21.09 — a standard
+marketplace rate, but stacked on Stripe's own ~1.5% + €0.25 it takes ~6.5% off
+a tradesperson's invoice, which is a lot to defend on work priced in hundreds.
 
-### 2. Does the €5 deposit still get charged?
+**The known weakness: it does not cap.** On a €5,000 extension 2% is €100, for
+a booking that cost the platform the same as a €200 one. If large jobs become
+normal, a cap or a banded rate is the change to make — not a lower percentage
+across the board.
 
-Right now the rule is: taken on request, **credited against the invoice** if
-the quote is accepted. Stripe can do better than that.
+Pinned by `a card payment produces a Stripe-hosted checkout…` in
+`tests/connect.test.js`, which asserts the €3.37 fee on a €168.30 invoice, and
+by the €4.90 transfer in `tests/deposits.test.js`.
 
-An authorisation can be **cancelled** rather than captured. So:
+### 2. Does the €5 deposit still get charged?  — DECIDED: no, it is a hold
+
+**Authorised on request, cancelled on accept, captured on decline.** The old
+charge-then-credit rule is gone; `credited` survives only as a state, so that
+deposits taken under it can still settle.
+
+What changed in the code: a deposit now goes through the same Stripe-hosted
+checkout an invoice does, but with `capture_method: manual`, so completing the
+page authorises rather than charges. `acceptQuote` calls `releaseDeposit`,
+which cancels the PaymentIntent. The invoice is raised for the full quoted
+price — there is no €5 to credit, because no €5 was taken.
+
+The table that made the case:
 
 | | today | with an authorisation |
 |---|---|---|
@@ -49,12 +66,22 @@ An authorisation can be **cancelled** rather than captured. So:
 Same money for everyone, cheaper, and no confusing €5 line on the invoice.
 **But it is a change to the rule you chose**, so it is yours to make.
 
-### 3. What happens when an authorisation expires?
+### 3. What happens when an authorisation expires?  — DECIDED: the request expires with it
 
-Card holds last about **7 days**. A quote that takes longer leaves the foxxer
-unprotected. Options: expire the request with it; re-authorise before it
-lapses (needs the customer present); or accept that a slow quote loses the
-protection and say so on screen.
+**A hold that lapses closes its request.** `expireStaleHolds` in `domain.js`
+sweeps every 15 minutes and at boot, moves the deposit to `expired` and the
+request to `expired`, and `createQuote` re-checks on the way in so a request
+cannot be quoted in the gap between two sweeps. The window is
+`FOXXERS_HOLD_DAYS`, 7 by default.
+
+The cost, stated plainly: a slow but genuine customer loses their request on
+day 7 and has to send it again. That was judged better than the alternative,
+which is a foxxer spending an evening pricing a job whose protection had
+quietly evaporated.
+
+Re-authorising was rejected rather than deferred: a fresh authorisation needs
+the customer present to approve it, so it is a notification flow that usually
+will not complete, dressed up as protection.
 
 ### 4. Can a foxxer trade before they have onboarded?  — DECIDED: yes
 
@@ -188,12 +215,40 @@ card-payments *and* `recipient` transfers. Real Stripe refuses with
 `insufficient_capabilities_for_transfer` when the second is missing, so a gate
 that checked only the first would have sent a foxxer to a failure at the till.
 
-### Phase 3 — deposits  (~1 day)
+### Phase 3 — deposits  — BUILT
 
-- Authorise on the platform account at request time
-- Accept → cancel; decline → capture, then transfer to the foxxer
-- `amount_capturable_updated` webhook moves `pending` → `held`
-- Expiry handling per decision 3
+- ✅ Authorised on the platform account at request time, through the same
+  hosted checkout an invoice uses, in manual-capture mode
+- ✅ Accept → cancel the hold; decline → capture, then transfer to the foxxer
+  less the 2% fee
+- ✅ `payment_intent.amount_capturable_updated` moves `pending` → `held`
+- ✅ Expiry per decision 3, swept every 15 minutes and re-checked at quote time
+
+`tests/deposits.test.js` — six tests against a mock Stripe that refuses what
+the real one refuses (it will not capture an automatic-capture intent, or
+cancel a captured one). Four things this turned up that were not in the plan.
+
+**A capture with no destination pays nobody.** `captureDeposit` called
+`provider.capture({ payment })` and never passed the foxxer's account, so the
+transfer branch was dead code: the €5 would have been captured onto the
+platform and stopped there, while every screen in the app said the foxxer had
+earned it. It now looks the pro up and passes `destination`.
+
+**A hold is a session, but a capture is an intent.** The payment stores the
+checkout session id, because that is what `checkout.session.completed` names —
+but capture, cancel and refund all act on the PaymentIntent. Both references
+are now kept, and `intentOf` prefers the intent while falling back to
+`providerRef` for anything taken before that was true.
+
+**`checkout.session.completed` fires for deposits too, and meant the wrong
+thing.** The handler assumed every completed session was an invoice and called
+`completePayment`, which would have thrown on a deposit — no invoice — or, worse
+on a different code path, marked something paid that was only authorised. It now
+branches on `kind` and lets the capturable event do the work.
+
+**Cancelling a hold moves no money.** `refund` reported `moved: true` for both
+branches. For a cancellation that is false, and it would have put a €5 movement
+in the ledger that never happened.
 
 ### Phase 4 — going live  (~half a day plus Stripe's review)
 
@@ -202,8 +257,8 @@ that checked only the first would have sent a foxxer to a failure at the till.
 - Fees disclosed to both sides before they commit
 - Test-mode run of every path, then live keys
 
-**Roughly three days of building**, spread over however long Stripe takes to
-approve the platform.
+Phases 1 to 3 are built. What is left is Phase 4 — **about half a day of work,
+spread over however long Stripe takes to approve the platform.**
 
 ---
 
