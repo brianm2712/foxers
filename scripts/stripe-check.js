@@ -160,6 +160,21 @@ async function run(opts = {}) {
     return link.url;
   });
 
+  /*
+   * The intent can be named directly, or — far easier — found from the session
+   * the checker itself printed. A session id is on screen already; a
+   * PaymentIntent id is buried in the dashboard.
+   */
+  async function intentFrom(sessionId, given) {
+    if (given) return { intent: given };
+    if (!sessionId) return { skip: needsIntent };
+    const cs = await api.retrieveSession({ id: sessionId });
+    if (!cs.payment_intent) {
+      return { skip: `session ${sessionId} has no payment yet — it has not been completed` };
+    }
+    return { intent: cs.payment_intent };
+  }
+
   let depositIntent = opts.intent || null;
   await step(report, 'Authorise a deposit (hold, not a charge)', async () => {
     const held = await api.hold({
@@ -211,21 +226,25 @@ async function run(opts = {}) {
    * browser and a card — so unless one is handed in, they are skipped and the
    * run is explicitly not complete.
    */
-  const needsIntent = 'complete the deposit checkout in a browser with a test card, then re-run with --intent=pi_…';
+  const needsIntent = 'complete the deposit checkout above in a browser with test card '
+    + '4242 4242 4242 4242, then re-run with --session=cs_… (the session id is printed above)';
 
+  let captureIntent = null;
   await step(report, 'Capture an authorisation', async () => {
-    if (!opts.intent) return { skip: needsIntent };
+    const found = await intentFrom(opts.session, opts.intent);
+    if (found.skip) return found;
+    captureIntent = found.intent;
     const captured = await api.capture({
-      payment: { id: 'check', paymentIntentRef: opts.intent, amount: DEPOSIT, currency: EUR },
+      payment: { id: 'check', paymentIntentRef: captureIntent, amount: DEPOSIT, currency: EUR },
     });
     return `captured ${captured.ref}`;
   });
 
   await step(report, 'Transfer a captured deposit to the foxxer', async () => {
-    if (!opts.intent) return { skip: needsIntent };
+    if (!captureIntent) return { skip: needsIntent };
     if (!accountId) return { skip: 'no account to transfer to' };
     const moved = await api.capture({
-      payment: { id: 'check-tr', paymentIntentRef: opts.intent, amount: DEPOSIT, currency: EUR },
+      payment: { id: 'check-tr', paymentIntentRef: captureIntent, amount: DEPOSIT, currency: EUR },
       destination: accountId,
     });
     return moved.transferRef
@@ -234,11 +253,14 @@ async function run(opts = {}) {
   });
 
   await step(report, 'Cancel an authorisation', async () => {
-    if (!opts.cancelIntent) {
-      return { skip: `${needsIntent} and --cancel-intent=pi_… for a second, uncaptured one` };
+    // A second one, deliberately: the first has been captured, and a captured
+    // intent cannot be cancelled. Cancelling needs its own untouched hold.
+    const found = await intentFrom(opts.cancelSession, opts.cancelIntent);
+    if (found.skip) {
+      return { skip: `${found.skip} — this needs a SECOND, uncaptured hold (--cancel-session=cs_…)` };
     }
     const released = await api.refund({
-      payment: { id: 'check-cn', paymentIntentRef: opts.cancelIntent, status: 'held', amount: DEPOSIT, currency: EUR },
+      payment: { id: 'check-cn', paymentIntentRef: found.intent, status: 'held', amount: DEPOSIT, currency: EUR },
     });
     return `cancelled ${released.ref}`;
   });

@@ -174,16 +174,27 @@ Three steps it **cannot** do on its own, because they need a browser and a
 card: capturing, transferring and cancelling. It prints the checkout URLs and
 skips those steps. To finish them:
 
-1. Open the deposit URL it printed, pay with a Stripe test card
-   (`4242 4242 4242 4242`, any future expiry, any CVC).
-2. Do it a second time, so you have one authorisation to capture and one to
-   cancel.
-3. Re-run with both intents:
+1. **Complete the onboarding link** it printed, with Stripe's test data. Until
+   the account has `stripe_transfers`, the destination charge is refused and
+   the checker skips it.
+2. **Open the deposit URL** it printed and pay with test card
+   `4242 4242 4242 4242`, any future expiry, any CVC.
+3. **Do it a second time** — you need one hold to capture and a different,
+   untouched one to cancel. A captured intent cannot be cancelled.
+4. **Re-run with the two session ids**, which the checker printed on the
+   deposit lines. You do not need to find a PaymentIntent id anywhere: the
+   checker reads each completed session and takes the intent from it.
 
 ```bash
 FOXXERS_STRIPE_SECRET_KEY=sk_test_... node scripts/stripe-check.js \
-  --intent=pi_first --cancel-intent=pi_second --account=acct_from_step_one
+  --account=acct_from_step_one \
+  --session=cs_test_first \
+  --cancel-session=cs_test_second
 ```
+
+`--intent=pi_…` and `--cancel-intent=pi_…` still work if you happen to have the
+intent ids to hand. A session that has not been completed is reported as a skip
+saying so, rather than guessed at.
 
 **The run is not complete until it says so.** Skipped is not passed, and the
 script keeps the two apart deliberately: everything below has still never

@@ -301,6 +301,17 @@ function create({ secretKey, base, publicUrl, feeBps = DEFAULT_FEE_BPS, feeFlat 
       description: `Foxxers — ${reference || 'job'}`,
     }),
 
+    /*
+     * Read a checkout session back.
+     *
+     * The app never needs this — the webhook tells it everything, and a read
+     * is not evidence anyway. It exists for the go-live checker: a completed
+     * session is the only place the PaymentIntent id appears, and making
+     * someone dig it out of the dashboard by hand is the kind of friction
+     * that stops a check being run twice.
+     */
+    retrieveSession: ({ id }) => call('GET', `/v1/checkout/sessions/${encodeURIComponent(id)}`),
+
     /* ---- connected accounts ------------------------------------------- */
 
     /*

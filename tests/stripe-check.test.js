@@ -93,6 +93,25 @@ test.before(async () => {
       // until the customer completes the session.
       return ok({ id, url: `https://checkout.stripe.test/c/pay/${id}`, payment_intent: null });
     }
+    const cap = pathname.match(/^\/v1\/payment_intents\/([^/]+)\/capture$/);
+    if (req.method === 'POST' && cap) return ok({ id: decodeURIComponent(cap[1]), status: 'succeeded' });
+
+    const can = pathname.match(/^\/v1\/payment_intents\/([^/]+)\/cancel$/);
+    if (req.method === 'POST' && can) return ok({ id: decodeURIComponent(can[1]), status: 'canceled' });
+
+    if (req.method === 'POST' && pathname === '/v1/transfers') {
+      if (!accounts.has(body.destination)) return bad(404, 'No such destination account');
+      return ok({ id: 'tr_' + crypto.randomBytes(4).toString('hex'), amount: Number(body.amount) });
+    }
+
+    /* A completed session, which is the only place the intent id shows up. */
+    const cs = pathname.match(/^\/v1\/checkout\/sessions\/([^/]+)$/);
+    if (req.method === 'GET' && cs) {
+      const id = decodeURIComponent(cs[1]);
+      if (!/^cs_test_done/.test(id)) return ok({ id, payment_intent: null, status: 'open' });
+      return ok({ id, payment_intent: 'pi_from_' + id, status: 'complete' });
+    }
+
     return bad(404, `mock has no route for ${req.method} ${pathname}`);
   });
   await new Promise((r) => stripe.listen(0, '127.0.0.1', r));
@@ -190,6 +209,37 @@ test('the steps that need a human are skipped, and say why', async () => {
   assert.ok(report.skipped >= 3, 'skips are counted');
   assert.strictEqual(report.ok, true, 'but skipping is not failing — there is just more to do');
   assert.strictEqual(report.complete, false, 'and the run is explicitly not complete');
+});
+
+/*
+ * The point of --session: a completed session is where the intent id lives,
+ * and nobody should have to go and find it in the dashboard to finish a check.
+ */
+test('a completed session id is enough to finish the money steps', async () => {
+  accountsReady = true;
+  const report = await run({
+    secretKey: KEY, base, quiet: true,
+    session: 'cs_test_done_one', cancelSession: 'cs_test_done_two',
+  });
+
+  assert.strictEqual(byName(report, /capture/i).status, 'pass', JSON.stringify(report.steps));
+  assert.strictEqual(byName(report, /transfer/i).status, 'pass');
+  assert.strictEqual(byName(report, /cancel/i).status, 'pass');
+  assert.strictEqual(report.skipped, 0, 'nothing left waiting on a human');
+  assert.strictEqual(report.complete, true, 'and only now is the run complete');
+
+  // The intent it acted on came from the session, not from a flag.
+  assert.ok(seen.some((x) => x.pathname === '/v1/payment_intents/pi_from_cs_test_done_one/capture'));
+  assert.ok(seen.some((x) => x.pathname === '/v1/payment_intents/pi_from_cs_test_done_two/cancel'));
+});
+
+test('a session that has not been completed is refused, not guessed at', async () => {
+  accountsReady = true;
+  const report = await run({ secretKey: KEY, base, quiet: true, session: 'cs_test_still_open' });
+
+  const capture = byName(report, /capture/i);
+  assert.strictEqual(capture.status, 'skip');
+  assert.match(capture.reason, /not been (completed|paid)|no payment/i);
 });
 
 test('a step that fails is reported as failed, and sinks the run', async () => {
