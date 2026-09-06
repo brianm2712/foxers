@@ -57,9 +57,24 @@ In your Stripe account, in **test mode** first.
       This is what a foxxer sees on the hosted onboarding page and what a
       customer sees on the hosted checkout page. An unbranded Stripe page in
       the middle of the flow is where people stop.
-- [ ] **Statement descriptor.** What shows on a customer's card statement. Get
-      this right — an unrecognised descriptor is a chargeback, and under
-      destination charges the foxxer pays for it.
+- [ ] **Statement descriptor** — but know what it does and does not control.
+
+      The adapter sets `on_behalf_of: <connected account>` on every job
+      payment, which makes **the foxxer the merchant of record**. The statement
+      descriptor, the business name on the statement and the dispute liability
+      all follow their account, not the platform's. So the platform descriptor
+      you set here governs anything Foxxers charges directly — not the payments
+      customers actually make.
+
+      That leaves a real question, and it is not a technical one: a customer
+      who booked through Foxxers sees `BYRNE ELECTRICAL` on their statement.
+      Whether that is more or less recognisable than `FOXXERS` decides how many
+      chargebacks land on your foxxers, and under destination charges they pay
+      for every one.
+
+      If it should say both, set `statement_descriptor_suffix` on the
+      PaymentIntent in `charge()` — Stripe composes it with the connected
+      account's own prefix. Nothing does that today.
 
 ## 2. Webhooks
 
