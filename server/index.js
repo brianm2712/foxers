@@ -575,6 +575,14 @@ on('POST', '/api/v1/webhooks/stripe', async (req, res) => {
      * invoice, and nothing has been captured.
      */
     if (payment.kind === 'deposit') {
+      /*
+       * This is the first thing that names the PaymentIntent. Creating a
+       * session does not produce one — real Stripe returns null — so without
+       * recording it here there would be nothing to capture or cancel later.
+       */
+      if (session.payment_intent && !payment.paymentIntentRef) {
+        store.update('payments', payment.id, { paymentIntentRef: session.payment_intent });
+      }
       return H.json(res, 200, { ok: true, matched: true, ignored: 'deposit_authorised' });
     }
     if (session.payment_status && session.payment_status !== 'paid') {
@@ -592,12 +600,23 @@ on('POST', '/api/v1/webhooks/stripe', async (req, res) => {
    */
   if (type === 'payment_intent.amount_capturable_updated') {
     const pi = event.data?.object || {};
-    const payment = pi.id
-      ? store.find('payments', (p) => p.kind === 'deposit' && p.paymentIntentRef === pi.id)
-      : null;
+    /*
+     * Matched two ways, because the events race. `checkout.session.completed`
+     * is what records the intent id, and this event can arrive first — in
+     * which case there is no stored id to match on and the deposit would be
+     * stranded at `pending` forever. The reference the intent carries in its
+     * own metadata settles it either way round.
+     */
+    const ref = pi.metadata?.foxxers_ref || null;
+    const payment = store.find('payments', (p) => p.kind === 'deposit'
+      && ((pi.id && p.paymentIntentRef === pi.id) || (ref && p.ref === ref)));
     if (!payment) {
-      store.log('webhook.unknown', String(pi.id || ''), { event: type });
+      store.log('webhook.unknown', String(pi.id || ''), { event: type, ref });
       return H.json(res, 200, { ok: true, matched: false });
+    }
+    // If this won the race, it is also the first thing to name the intent.
+    if (pi.id && !payment.paymentIntentRef) {
+      store.update('payments', payment.id, { paymentIntentRef: pi.id });
     }
     pay.settleDeposit(store, payment.id, { ok: true, providerRef: payment.providerRef });
     store.log('webhook.applied', payment.id, { event: type, amount: pi.amount_capturable });

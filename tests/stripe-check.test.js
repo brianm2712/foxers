@@ -26,6 +26,12 @@ let stripe, base;
 const seen = [];
 const accounts = new Map();
 let failCheckoutOnce = false;
+/*
+ * A freshly created account has no capabilities — that is what Stripe really
+ * returns, and it is why the destination-charge step cannot pass on a first
+ * run. Flipped on by the tests that need an onboarded one.
+ */
+let accountsReady = false;
 
 test.before(async () => {
   stripe = http.createServer(async (req, res) => {
@@ -52,17 +58,19 @@ test.before(async () => {
     if (req.method === 'POST' && pathname === '/v2/core/accounts') {
       if (!isJson) return bad(400, 'v2 endpoints require a JSON body');
       const id = 'acct_' + crypto.randomBytes(6).toString('hex');
+      const status = accountsReady ? 'active' : 'restricted';
       accounts.set(id, {
         id,
         configuration: {
-          merchant: { capabilities: { card_payments: { status: 'restricted' } } },
+          merchant: { capabilities: { card_payments: { status } } },
           recipient: {
-            capabilities: {
-              stripe_balance: { payouts: { status: 'restricted' }, stripe_transfers: { status: 'restricted' } },
-            },
+            capabilities: { stripe_balance: { payouts: { status }, stripe_transfers: { status } } },
           },
         },
-        requirements: { entries: [{ awaiting_action_from: 'user', description: 'external_account' }] },
+        requirements: {
+          entries: accountsReady ? []
+            : [{ awaiting_action_from: 'user', description: 'external_account' }],
+        },
       });
       return ok(accounts.get(id));
     }
@@ -81,8 +89,9 @@ test.before(async () => {
     if (req.method === 'POST' && pathname === '/v1/checkout/sessions') {
       if (failCheckoutOnce) { failCheckoutOnce = false; return bad(400, 'Sessions are switched off'); }
       const id = 'cs_test_' + crypto.randomBytes(6).toString('hex');
-      return ok({ id, url: `https://checkout.stripe.test/c/pay/${id}`,
-        payment_intent: 'pi_' + crypto.randomBytes(6).toString('hex') });
+      // null, as real Stripe returns at creation — the intent does not exist
+      // until the customer completes the session.
+      return ok({ id, url: `https://checkout.stripe.test/c/pay/${id}`, payment_intent: null });
     }
     return bad(404, `mock has no route for ${req.method} ${pathname}`);
   });
@@ -106,6 +115,7 @@ test('a live key is refused before a single call is made', async () => {
 });
 
 test('every step it can do headlessly is actually performed and reported', async () => {
+  accountsReady = true;
   const report = await run({ secretKey: KEY, base, publicUrl: 'https://foxxers.test', quiet: true });
   assert.strictEqual(report.ok, true, JSON.stringify(report.steps, null, 1));
 
@@ -124,6 +134,7 @@ test('every step it can do headlessly is actually performed and reported', async
 });
 
 test('the deposit is authorised, and the invoice carries the platform fee', async () => {
+  accountsReady = true;
   seen.length = 0;
   await run({ secretKey: KEY, base, publicUrl: 'https://foxxers.test', feeBps: 200, quiet: true });
 
@@ -142,11 +153,29 @@ test('the deposit is authorised, and the invoice carries the platform fee', asyn
 });
 
 /*
+ * A brand-new connected account has no capabilities, and Stripe refuses a
+ * destination charge to one — correctly. Calling that a FAILURE would mean the
+ * step can never pass on a first run, and a checker with a permanent red line
+ * is a checker whose red lines stop being read.
+ */
+test('a destination charge to an un-onboarded account is skipped, not failed', async () => {
+  accountsReady = false;
+  const report = await run({ secretKey: KEY, base, quiet: true });
+
+  const invoice = byName(report, /invoice/i);
+  assert.strictEqual(invoice.status, 'skip');
+  assert.match(invoice.reason, /stripe_transfers|onboarding/i);
+  assert.strictEqual(report.failed, 0, 'nothing is actually broken');
+  assert.strictEqual(report.complete, false, 'but there is plainly more to do');
+});
+
+/*
  * The steps that cannot be done without a browser and a card. They must be
  * reported as skipped, with the reason — a checker that counts them as passes
  * would say the money paths are proven when nothing has moved.
  */
 test('the steps that need a human are skipped, and say why', async () => {
+  accountsReady = true;
   const report = await run({ secretKey: KEY, base, quiet: true });
 
   const capture = byName(report, /capture/i);
@@ -164,6 +193,7 @@ test('the steps that need a human are skipped, and say why', async () => {
 });
 
 test('a step that fails is reported as failed, and sinks the run', async () => {
+  accountsReady = true;
   failCheckoutOnce = true;
   const report = await run({ secretKey: KEY, base, quiet: true });
 

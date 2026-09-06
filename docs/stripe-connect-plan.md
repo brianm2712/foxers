@@ -187,6 +187,34 @@ applied.
 **The money paths remain unexercised.** No charge, deposit, capture or transfer
 has ever been made against Stripe.
 
+### What the second real round trip found  (2026-09-06, evening)
+
+`scripts/stripe-check.js` against a live test sandbox. Account creation, the
+capability read, the onboarding link and both checkout sessions were all
+accepted — including with `http://localhost` return and success URLs, which had
+been the predicted first failure and was not one.
+
+**A checkout session has no PaymentIntent when you create it.** Real Stripe
+returns `payment_intent: null`; the intent is created when the customer
+completes the session. The mock had been handing one back at creation, and that
+single courtesy hid a bug that would have broken every deposit in production:
+`holdDeposit` stored the null, and `payment_intent.amount_capturable_updated`
+matched deposits on that stored id — so no deposit would ever have left
+`pending`, no quote could ever have been declined for money, and the tests
+would have stayed green throughout.
+
+Fixed by carrying the job reference in `payment_intent_data.metadata`, so the
+intent identifies itself whatever order the events arrive in, and by recording
+the intent id from `checkout.session.completed`. Both orderings are now pinned
+by tests, because the two events race and the app has no say in which wins.
+
+**A destination charge to a fresh account is refused, and should be.** Stripe
+asked for `configurations.recipient.capabilities.stripe_balance.stripe_transfers`
+by name — the exact capability the account is created requesting, so the request
+shape is right; the account simply has not been onboarded. The checker now
+reports that as a skip with instructions rather than a failure, since a first
+run can never pass it and a permanent red line is one people stop reading.
+
 ### Phase 2 — invoice payments  — BUILT
 
 - ✅ Destination charge to the foxxer's account, platform fee deducted

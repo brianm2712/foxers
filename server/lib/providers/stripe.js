@@ -191,6 +191,15 @@ function create({ secretKey, base, publicUrl, feeBps = DEFAULT_FEE_BPS, feeFlat 
       payment_intent_data: {
         description,
         ...(captureMode ? { capture_method: captureMode } : {}),
+        /*
+         * The same reference on the INTENT as on the session. Load-bearing:
+         * a session has no PaymentIntent when it is created — real Stripe
+         * returns null, whatever a mock may say — so a `payment_intent.*`
+         * event cannot be matched by an id we never received. It carries its
+         * own reference instead, and can be matched on arrival whatever order
+         * the events turn up in.
+         */
+        metadata: { foxxers_ref: ref || '', foxxers_payment: reference || '' },
         // A destination charge routes the money to the foxxer as it is taken.
         // A deposit has none: an open request has no foxxer yet.
         ...(destination ? { transfer_data: { destination }, on_behalf_of: destination } : {}),

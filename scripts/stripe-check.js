@@ -143,9 +143,11 @@ async function run(opts = {}) {
     return acct.id;
   });
 
+  let ready = null;
   await step(report, 'Read its capabilities back', async () => {
     if (!accountId) return { skip: 'no account to read' };
     const a = await api.account({ accountId });
+    ready = a;
     // Every one of these comes back null without the `include` list, which
     // reads exactly like a foxxer who has done nothing.
     return `charges ${a.chargesEnabled} · transfers ${a.transfersEnabled} · payouts ${a.payoutsEnabled}`
@@ -164,14 +166,36 @@ async function run(opts = {}) {
       amount: DEPOSIT, currency: EUR, reference: `check-dep-${Date.now()}`, ref: 'CHECK-DEP',
     });
     depositIntent = depositIntent || held.paymentIntent;
+    /*
+     * There is no PaymentIntent yet, and there is not supposed to be: Stripe
+     * creates one when the customer completes the session. Saying so beats
+     * printing "intent null" and leaving the reader to wonder what broke.
+     */
     return {
-      detail: `session ${held.ref} · intent ${held.paymentIntent}`,
+      detail: held.paymentIntent
+        ? `session ${held.ref} · intent ${held.paymentIntent}`
+        : `session ${held.ref} · no intent until the session is completed`,
       note: `complete it at: ${held.checkoutUrl}`,
     };
   });
 
   await step(report, 'Raise an invoice as a destination charge', async () => {
     if (!accountId) return { skip: 'no account to route it to' };
+    /*
+     * A freshly created account has no capabilities at all, and Stripe refuses
+     * a destination charge to one — correctly. Reporting that as a FAILURE
+     * would mean this step can never pass on a first run, and a checker that
+     * always shows one red line is a checker whose red lines stop being read.
+     *
+     * The app makes the same check before raising a payment: `canBePaid` in
+     * payoutsView needs both card_payments and stripe_transfers, because real
+     * Stripe refuses with `insufficient_capabilities_for_transfer` when the
+     * second is missing.
+     */
+    if (ready && !ready.transfersEnabled) {
+      return { skip: 'the account has no stripe_transfers capability yet — complete the '
+        + 'onboarding link above with Stripe test data, then re-run with --account=' + accountId };
+    }
     const charged = await api.charge({
       amount: INVOICE, currency: EUR, reference: `check-inv-${Date.now()}`,
       destination: accountId, ref: 'CHECK-INV',

@@ -129,8 +129,15 @@ test.before(async () => {
       });
       seen[seen.length - 1].responseId = id;
       seen[seen.length - 1].paymentIntent = pi;
+      /*
+       * REAL STRIPE RETURNS null HERE. Verified against a live test sandbox on
+       * 2026-09-06: a Checkout Session has no PaymentIntent until the customer
+       * completes it. The mock used to hand one back at creation, and that one
+       * politeness hid a bug that would have stopped every deposit in
+       * production from ever reaching `held`.
+       */
       return ok({ id, object: 'checkout.session', url: `https://checkout.stripe.test/c/pay/${id}`,
-        payment_intent: pi, payment_status: 'unpaid', status: 'open' });
+        payment_intent: null, payment_status: 'unpaid', status: 'open' });
     }
 
     /* An authorisation is taken, not charged. Capturing it moves the money. */
@@ -246,11 +253,23 @@ async function webhook(event) {
   return { status: res.status, body: json, raw: text };
 }
 
+/*
+ * The session is done. This is the first thing that names the PaymentIntent —
+ * at creation there was none.
+ */
+const sessionDoneEvent = (session, pi) => ({
+  id: 'evt_' + crypto.randomBytes(4).toString('hex'),
+  type: 'checkout.session.completed',
+  data: { object: { id: session, object: 'checkout.session', payment_intent: pi,
+    payment_status: 'unpaid' } },
+});
+
 /* The event that means the money is genuinely held, not merely promised. */
-const capturableEvent = (pi, amount) => ({
+const capturableEvent = (pi, amount, ref) => ({
   id: 'evt_' + crypto.randomBytes(4).toString('hex'),
   type: 'payment_intent.amount_capturable_updated',
-  data: { object: { id: pi, object: 'payment_intent', amount_capturable: amount, status: 'requires_capture' } },
+  data: { object: { id: pi, object: 'payment_intent', amount_capturable: amount,
+    status: 'requires_capture', metadata: ref ? { foxxers_ref: ref } : {} } },
 });
 
 /* ---- setting the stage ------------------------------------------------- */
@@ -322,13 +341,54 @@ test('sending a request authorises the deposit, and charges nothing', async () =
 });
 
 test('the deposit is only held once Stripe says the money is capturable', async () => {
-  const w = await webhook(capturableEvent(heldIntent, 500));
+  const session = lastSent('POST', /^\/v1\/checkout\/sessions/).responseId;
+
+  // The session finishing is what first names the PaymentIntent. Until this
+  // arrives the app has a checkout session and nothing else.
+  const done = await webhook(sessionDoneEvent(session, heldIntent));
+  assert.strictEqual(done.status, 200, done.raw);
+  assert.strictEqual(done.body.matched, true, done.raw);
+
+  // Completing a form is not money being held. Only this is.
+  const w = await webhook(capturableEvent(heldIntent, 500, heldRef));
   assert.strictEqual(w.status, 200, w.raw);
   assert.strictEqual(w.body.matched, true, w.raw);
 
   const job = await api('GET', `/api/v1/jobs/${heldRef}?t=${encodeURIComponent(heldToken)}`,
     undefined, { token: null });
   assert.strictEqual(job.body.deposit.status, 'held', job.raw);
+});
+
+/*
+ * The two events race, and the app has no say in which arrives first. If the
+ * capturable event wins, there is no stored intent id to match it against —
+ * the session-completed event is what records that. Matching on the reference
+ * the intent carries in its own metadata is what stops a deposit being
+ * stranded at `pending` for the rest of its life.
+ */
+test('a hold is still recognised when the capturable event arrives first', async () => {
+  const r = await api('POST', '/api/v1/requests', {
+    trade: 'electrician', area: 'dublin', urgency: 'flexible',
+    description: 'A rattling extractor fan in the utility room needs a look.',
+  }, { token: customerToken });
+  const ref = r.body.ref;
+  const session = lastSent('POST', /^\/v1\/checkout\/sessions/);
+
+  // Out of order on purpose.
+  const first = await webhook(capturableEvent(session.paymentIntent, 500, ref));
+  assert.strictEqual(first.body.matched, true, first.raw);
+
+  const job = await api('GET', `/api/v1/jobs/${ref}?t=${encodeURIComponent(r.body.token)}`,
+    undefined, { token: null });
+  assert.strictEqual(job.body.deposit.status, 'held', job.raw);
+
+  // And the late session event is harmless rather than a second settlement.
+  const late = await webhook(sessionDoneEvent(session.responseId, session.paymentIntent));
+  assert.strictEqual(late.status, 200, late.raw);
+
+  const after = await api('GET', `/api/v1/jobs/${ref}?t=${encodeURIComponent(r.body.token)}`,
+    undefined, { token: null });
+  assert.strictEqual(after.body.deposit.status, 'held', 'still held exactly once');
 });
 
 /* ---- accepting releases it --------------------------------------------- */
@@ -379,8 +439,10 @@ test('declining a quote captures the hold and transfers it, less the 2% fee', as
   }, { token: customerToken });
   const ref = r.body.ref;
   const jobToken = r.body.token;
-  const pi = lastSent('POST', /^\/v1\/checkout\/sessions/).paymentIntent;
-  await webhook(capturableEvent(pi, 500));
+  const session = lastSent('POST', /^\/v1\/checkout\/sessions/);
+  const pi = session.paymentIntent;
+  await webhook(sessionDoneEvent(session.responseId, pi));
+  await webhook(capturableEvent(pi, 500, ref));
 
   const reqs = await api('GET', '/api/v1/pro/requests', undefined, { token: proToken });
   const mine = reqs.body.requests.find((x) => x.ref === ref);
