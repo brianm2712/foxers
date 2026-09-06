@@ -208,6 +208,31 @@ intent identifies itself whatever order the events arrive in, and by recording
 the intent id from `checkout.session.completed`. Both orderings are now pinned
 by tests, because the two events race and the app has no say in which wins.
 
+### And what the third found  (2026-09-07)
+
+Running the money steps for real, with `--wait`.
+
+**A Checkout Session has a PaymentIntent before anybody pays it.** The checker
+had been waiting for an intent to appear and treating that as payment, so it
+carried on into capture against an unpaid session and Stripe refused with
+`requires_payment_method`. `status === 'complete'` is the signal. Note that
+`payment_status` is *not* — on a manual-capture session it stays `unpaid` even
+once the money is authorised, because it means "not captured".
+
+**You cannot cancel a PaymentIntent that Checkout created while its session is
+open.** Stripe says so in as many words and tells you to expire the session
+instead. This one reaches past the checker into the app: a customer who opens a
+request and closes the tab leaves a deposit at `pending`, and the seven-day
+sweep releases it — by cancelling an intent that cannot be cancelled. The
+release would have failed, the session would have stayed open, and the customer
+could still have completed it afterwards, putting a hold on their card for a
+request that closed a week ago.
+
+`refund()` now expires the session when there is no capturable intent, and
+falls back to expiring if a cancel is refused for this reason — the app can
+believe a deposit is held, because a webhook said so, while Stripe still
+considers the session open. `tests/stripe-adapter.test.js` pins all four paths.
+
 **A destination charge to a fresh account is refused, and should be.** Stripe
 asked for `configurations.recipient.capabilities.stripe_balance.stripe_transfers`
 by name — the exact capability the account is created requesting, so the request

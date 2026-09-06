@@ -167,6 +167,27 @@ async function run(opts = {}) {
    */
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  /*
+   * `status === 'complete'` is the signal, NOT the presence of a
+   * PaymentIntent. Stripe attaches an intent to a session before anybody pays
+   * it, and capturing one of those is refused with `requires_payment_method`.
+   * Verified the hard way against real Stripe on 2026-09-07.
+   *
+   * For a manual-capture session `payment_status` stays `unpaid` even once the
+   * money is authorised — it means "not captured", not "not paid" — so it is
+   * the wrong thing to gate on too.
+   */
+  function readPaid(cs, sessionId) {
+    if (cs.status !== 'complete') {
+      return { skip: `session ${sessionId} is still open — it has not been completed. `
+        + 'It has a PaymentIntent already, but nobody has paid it' };
+    }
+    if (!cs.payment_intent) {
+      return { skip: `session ${sessionId} completed without a payment` };
+    }
+    return { intent: cs.payment_intent };
+  }
+
   async function intentFrom(sessionId, given) {
     if (given) return { intent: given };
     if (!sessionId) return { skip: needsIntent };
@@ -186,10 +207,7 @@ async function run(opts = {}) {
       }
       throw err;
     }
-    if (!cs.payment_intent) {
-      return { skip: `session ${sessionId} has no payment yet — it has not been completed` };
-    }
-    return { intent: cs.payment_intent };
+    return readPaid(cs, sessionId);
   }
 
   /*
@@ -208,7 +226,7 @@ async function run(opts = {}) {
     if (!quiet) console.log(`      waiting for you to pay the ${label} — Ctrl-C to skip`);
     for (;;) {
       const cs = await api.retrieveSession({ id: sessionId });
-      if (cs.payment_intent) return { intent: cs.payment_intent };
+      if (cs.status === 'complete' && cs.payment_intent) return { intent: cs.payment_intent };
       if (Date.now() >= until) {
         return { skip: `${label} was still open after ${waitSeconds}s — nobody paid it. `
           + `Pay it and re-run with --session=${sessionId}` };

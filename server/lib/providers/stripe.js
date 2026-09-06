@@ -164,6 +164,19 @@ function create({ secretKey, base, publicUrl, feeBps = DEFAULT_FEE_BPS, feeFlat 
   const platformFee = (amount) => Math.max(0, Math.round(toMinor(amount) * bps / 10_000) + flat);
 
   /*
+   * Close a checkout the customer never completed. Expiring is what releases a
+   * Checkout-created hold that has no capturable intent behind it — and, just
+   * as importantly, it stops them completing it later against a request that
+   * has already been closed here.
+   */
+  async function expireSession(payment) {
+    const cs = await call('POST',
+      `/v1/checkout/sessions/${encodeURIComponent(payment.providerRef)}/expire`,
+      {}, { idempotencyKey: `ex_${payment.id}` });
+    return { ref: cs.id, moved: false };
+  }
+
+  /*
    * A Stripe-HOSTED checkout page, not a card form on our own pages. That is
    * the decision the footer forces: seamless in-app entry means loading
    * js.stripe.com, which is a third-party request that also fingerprints. One
@@ -279,8 +292,30 @@ function create({ secretKey, base, publicUrl, feeBps = DEFAULT_FEE_BPS, feeFlat 
           { idempotencyKey: `rf_${payment.id}` });
         return { ref: r.id, moved: true };
       }
-      const pi = await call('POST', `/v1/payment_intents/${encodeURIComponent(intentOf(payment))}/cancel`,
-        {}, { idempotencyKey: `cn_${payment.id}` });
+
+      /*
+       * A hold nobody finished paying has no intent to cancel, and Stripe
+       * refuses to be asked: "You cannot perform this action on PaymentIntents
+       * created by Checkout. Try expiring the Checkout Session instead."
+       *
+       * This is not a corner case. A customer who opens a request and closes
+       * the tab leaves a deposit at `pending`, and the seven-day sweep releases
+       * it. Cancelling would fail, the session would stay open, and they could
+       * still complete it afterwards — a hold on their card for a request that
+       * closed a week ago.
+       */
+      if (payment.status === 'pending' || !intentOf(payment)) return expireSession(payment);
+
+      let pi;
+      try {
+        pi = await call('POST', `/v1/payment_intents/${encodeURIComponent(intentOf(payment))}/cancel`,
+          {}, { idempotencyKey: `cn_${payment.id}` });
+      } catch (err) {
+        // The app can believe a deposit is held — a webhook said so — while
+        // Stripe still considers the session open. Do the thing that works.
+        if (/created by Checkout/i.test(err.message)) return expireSession(payment);
+        throw err;
+      }
       // Cancelling a hold moves nothing — that is the point of it. Saying
       // otherwise would put a €5 movement in the ledger that never happened.
       return { ref: pi.id, moved: false };

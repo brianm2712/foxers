@@ -113,13 +113,22 @@ test.before(async () => {
       const id = decodeURIComponent(cs[1]);
       if (/^cs_test_missing/.test(id)) return bad(404, `No such checkout.session: ${id}`);
       if (/^cs_test_done/.test(id)) return ok({ id, payment_intent: 'pi_from_' + id, status: 'complete' });
-      // A session somebody is in the middle of paying: null until it is not.
+      /*
+       * The trap this suite exists to remember: a session carries a
+       * PaymentIntent BEFORE anybody has paid it. Verified against real Stripe
+       * on 2026-09-07 — capturing one of those is refused with
+       * `requires_payment_method`. `status: 'complete'` is the signal; the
+       * presence of an intent is not.
+       */
       const n = (polls.get(id) || 0) + 1;
       polls.set(id, n);
-      if (completeAfter && n >= completeAfter) {
-        return ok({ id, payment_intent: 'pi_paid_' + id, status: 'complete' });
-      }
-      return ok({ id, payment_intent: null, status: 'open' });
+      const paid = completeAfter && n >= completeAfter;
+      return ok({
+        id,
+        payment_intent: 'pi_' + (paid ? 'paid_' : 'pending_') + id,
+        status: paid ? 'complete' : 'open',
+        payment_status: paid ? 'unpaid' : 'unpaid',
+      });
     }
 
     return bad(404, `mock has no route for ${req.method} ${pathname}`);
@@ -243,13 +252,21 @@ test('a completed session id is enough to finish the money steps', async () => {
   assert.ok(seen.some((x) => x.pathname === '/v1/payment_intents/pi_from_cs_test_done_two/cancel'));
 });
 
-test('a session that has not been completed is refused, not guessed at', async () => {
+/*
+ * An open session already has a PaymentIntent attached, and capturing it is
+ * refused with `requires_payment_method`. Treating "an intent exists" as "it
+ * was paid" is the mistake that produced three red lines on a real run.
+ */
+test('a session with an intent but no payment is not mistaken for a paid one', async () => {
   accountsReady = true;
+  completeAfter = 0;   // never completes, but always reports an intent
+  polls.clear();
   const report = await run({ secretKey: KEY, base, quiet: true, session: 'cs_test_still_open' });
 
   const capture = byName(report, /capture/i);
   assert.strictEqual(capture.status, 'skip');
-  assert.match(capture.reason, /not been (completed|paid)|no payment/i);
+  assert.match(capture.reason, /not been (completed|paid)|still open/i);
+  assert.strictEqual(report.failed, 0, 'and it never tried to capture it');
 });
 
 /*
