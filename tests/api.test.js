@@ -26,16 +26,16 @@ function waitForHealth(url, tries = 60) {
 }
 
 test.before(async () => {
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'foxers-test-'));
+  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'foxxers-test-'));
   const port = 8000 + Math.floor(Math.random() * 1500);
   base = `http://127.0.0.1:${port}`;
   child = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {
     env: {
-      ...process.env, FOXERS_DATA: dataDir, FOXERS_PORT: String(port), FOXERS_HOST: '127.0.0.1',
+      ...process.env, FOXXERS_DATA: dataDir, FOXXERS_PORT: String(port), FOXXERS_HOST: '127.0.0.1',
       // The suite makes far more calls from one address than a person would.
       // The limiters have their own test below; everything else would just be
       // measuring them.
-      FOXERS_LIMIT_WRITE: '10000', FOXERS_LIMIT_SIGNUP: '10000', FOXERS_LIMIT_READ: '100000',
+      FOXXERS_LIMIT_WRITE: '10000', FOXXERS_LIMIT_SIGNUP: '10000', FOXXERS_LIMIT_READ: '100000',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -369,7 +369,7 @@ test('a path traversal attempt does not escape the web root', async () => {
   const res = await fetch(`${base}/../server/index.js`, { redirect: 'manual' });
   assert.ok(res.status === 404 || res.status === 301, `got ${res.status}`);
   const text = await res.text();
-  assert.ok(!text.includes('FOXERS_DATA'), 'server source is not served');
+  assert.ok(!text.includes('FOXXERS_DATA'), 'server source is not served');
 });
 
 test('an unknown API route 404s as JSON rather than the app shell', async () => {
@@ -419,7 +419,7 @@ test('the customer job list shows their own jobs and only their own', async () =
   assert.strictEqual(theirs.body.count, 0, 'a new account starts empty');
 });
 
-test('a walk-in a foxer writes up never lands in a stranger account', async () => {
+test('a walk-in a foxxer writes up never lands in a stranger account', async () => {
   // Same phone number as the signed-up customer. Matching on it would drop
   // this job into her list, which is how a shared landline or a mistyped
   // digit leaks one household's work into another's.
@@ -475,10 +475,10 @@ test('sending a request holds a EUR 5 deposit', async () => {
   assert.match(view.body.deposit.note, /comes off the price/);
 });
 
-test('a declined quote leaves the deposit with the foxer', async () => {
+test('a declined quote leaves the deposit with the foxxer', async () => {
   const job = await askFor('Immersion keeps tripping the RCD, needs looking at.');
   const request = (await api('GET', '/api/v1/pro/requests')).body.requests.find((r) => r.ref === job.ref);
-  assert.ok(request, 'the request reached the foxer');
+  assert.ok(request, 'the request reached the foxxer');
 
   const q = await api('POST', '/api/v1/pro/quotes', {
     requestId: request.id, title: 'Immersion circuit',
@@ -503,7 +503,7 @@ test('accepting a quote locks the offered time and credits the deposit', async (
   const free = await api('GET', '/api/v1/pro/slots?minutes=120&days=14');
   assert.strictEqual(free.status, 200);
   const offered = free.body.days.flatMap((d) => d.slots).slice(0, 3).map((s) => s.start);
-  assert.strictEqual(offered.length, 3, 'the foxer has times to offer');
+  assert.strictEqual(offered.length, 3, 'the foxxer has times to offer');
 
   const q = await api('POST', '/api/v1/pro/quotes', {
     requestId: request.id, title: 'Two sockets, back bedroom', minutes: 120, slots: offered,

@@ -57,7 +57,7 @@ async function request(method, url, body) {
       credentials: 'same-origin',
     });
   } catch {
-    throw new ApiError('No connection to Foxers. Check your signal and try again.', 0, 'offline');
+    throw new ApiError('No connection to Foxxers. Check your signal and try again.', 0, 'offline');
   }
   const text = await res.text();
   let data = null;

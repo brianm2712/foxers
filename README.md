@@ -1,15 +1,15 @@
-# Foxers
+# Foxxers
 
 Job software and a booking marketplace for trades, for Ireland and the UK.
 
 Two apps share one domain, and the split between them is the product. A **customer**
 signs in, searches by trade and county, and either books fixed-price work outright or
-describes a job and gets a written quote. A **foxer** — the tradesperson — signs in to a
+describes a job and gets a written quote. A **foxxer** — the tradesperson — signs in to a
 console: requests to price, quotes waiting on a yes, the diary, and the money.
 
 Node standard library only. No npm, no build step, no outbound calls.
 
-![Foxers, end to end](docs/demo.gif)
+![Foxxers, end to end](docs/demo.gif)
 
 *A real run, not a mockup: a customer searches, signs in, opens a quote and picks one
 of three hours the electrician actually has free — accepting is the booking — and it is
@@ -26,7 +26,7 @@ that.
 But a real subset of it *can*, and that subset is bigger than it first looks: a boiler
 service, an EICR, a gutter clean, a lock change, an EV charger survey. Known duration,
 known price. `server/lib/trades.js` carries that split for twelve trades — a `bookable`
-list and a `quoteOnly` list each. A foxer publishes whichever they actually offer.
+list and a `quoteOnly` list each. A foxxer publishes whichever they actually offer.
 
 **Fixed scope is bookable. Everything else routes to a quote.** That one line is the
 product; the rest of this repo is the consequences of it.
@@ -36,22 +36,22 @@ product; the rest of this repo is the consequences of it.
 ## Running it
 
 ```sh
-git clone https://github.com/brianm2712/foxers && cd foxers
+git clone https://github.com/brianm2712/foxxers && cd foxxers
 
-rm -rf data && FOXERS_DATA=./data node scripts/seed.js
-FOXERS_DATA=./data FOXERS_PORT=8120 node server/index.js
+rm -rf data && FOXXERS_DATA=./data node scripts/seed.js
+FOXXERS_DATA=./data FOXXERS_PORT=8120 node server/index.js
 ```
 
 Then open <http://localhost:8120>. Password for every seeded account is
-`foxers-demo-2026`.
+`foxxers-demo-2026`.
 
 | Sign in as | Email | What it shows |
 |---|---|---|
 | Customer | `ciara@example.com` | Five jobs: one waiting on her answer, one paid with a receipt, one declined, one still being priced |
-| Foxer (IE) | `byrne.electrical@example.com` | RCT 20%, an overdue invoice with a chase queued, a deposit earned |
-| Foxer (UK) | `mcallister.electrical.ni@example.com` | The UK side — VAT 20% and CIS instead of RCT |
+| Foxxer (IE) | `byrne.electrical@example.com` | RCT 20%, an overdue invoice with a chase queued, a deposit earned |
+| Foxxer (UK) | `mcallister.electrical.ni@example.com` | The UK side — VAT 20% and CIS instead of RCT |
 
-The foxer sign-in page lists the demo logins, but only when the hostname is localhost.
+The foxxer sign-in page lists the demo logins, but only when the hostname is localhost.
 
 > **Stop the server before reseeding.** It holds the whole database in memory and
 > flushes on write, so `rm -rf data && node scripts/seed.js` against a running server
@@ -74,7 +74,7 @@ the iOS client will: bearer token, JSON in, JSON out.
 ./scripts/install-desktop.sh
 ```
 
-Puts Foxers in the applications menu and on the desktop with the fox icon.
+Puts Foxxers in the applications menu and on the desktop with the fox icon.
 Launching it starts the server if it is not already running — seeding first if
 there is no database yet — waits for it to answer, then opens the browser. If
 it cannot start, it says so in a dialog rather than doing nothing. Everything
@@ -84,11 +84,11 @@ lands under `$HOME`; nothing needs root.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `FOXERS_DATA` | `./data` | Where the JSON database and session key live |
-| `FOXERS_PORT` / `FOXERS_HOST` | `8120` / `127.0.0.1` | Bind address |
-| `FOXERS_OPEN_SIGNUP` | on | Set to `0` to close foxer signup |
-| `FOXERS_SEED_PASSWORD` | `foxers-demo-2026` | Password for seeded accounts |
-| `FOXERS_LIMIT_LOGIN` \| `SIGNUP` \| `WRITE` \| `READ` | `8` \| `10` \| `30` \| `600` | Rate-limit ceilings, so tests can raise them without the code knowing it is being tested |
+| `FOXXERS_DATA` | `./data` | Where the JSON database and session key live |
+| `FOXXERS_PORT` / `FOXXERS_HOST` | `8120` / `127.0.0.1` | Bind address |
+| `FOXXERS_OPEN_SIGNUP` | on | Set to `0` to close foxxer signup |
+| `FOXXERS_SEED_PASSWORD` | `foxxers-demo-2026` | Password for seeded accounts |
+| `FOXXERS_LIMIT_LOGIN` \| `SIGNUP` \| `WRITE` \| `READ` | `8` \| `10` \| `30` \| `600` | Rate-limit ceilings, so tests can raise them without the code knowing it is being tested |
 
 ---
 
@@ -107,12 +107,12 @@ server/lib/http.js      request/response plumbing, static files, cookies
 
 web/public/js/app.js       router and shell — the two front doors
 web/public/js/customer.js  everything a customer sees
-web/public/js/pro.js       everything a foxer sees
+web/public/js/pro.js       everything a foxxer sees
 web/public/js/api.js       the only place that talks to the server
 web/public/js/ui.js        DOM and money-formatting helpers
 
 scripts/seed.js         demo data — a marketplace worth looking at
-scripts/foxers          start it if it is not running, then open it
+scripts/foxxers          start it if it is not running, then open it
 scripts/install-desktop.sh  applications-menu and desktop launcher, with the icon
 scripts/make-icons.py   app icons from the artwork (dev only, needs Pillow)
 tests/                  three suites, 51 assertions
@@ -138,12 +138,12 @@ which is the thing a WhatsApp voice note never produces.
 ### Asking, in full
 
 1. **The customer sends a request, and €5 is taken.** Not to accept — to ask.
-2. **The foxer prices it and offers up to three genuinely free hours**, checked against
+2. **The foxxer prices it and offers up to three genuinely free hours**, checked against
    their real availability at the moment of sending.
 3. **The customer accepts one of those hours.** Accepting *is* the booking: it lands in
    the diary at that instant, and that hour immediately stops being offerable to anyone
    else. A price agreed without a date is the failure this app exists to prevent.
-   - **Declined instead?** The foxer keeps the €5, for pricing a job that went nowhere.
+   - **Declined instead?** The foxxer keeps the €5, for pricing a job that went nowhere.
    - **Accepted?** The €5 is credited against the invoice, so it costs a genuine
      customer nothing at all.
 4. **The job is done, and the balance is taken at the door** — card reader, Apple or
@@ -173,7 +173,7 @@ Three things that are easy to get backwards, and are tested because of it:
   price; the €5 only reduces what is left to collect. Treating it as a discount would
   understate the VAT on every job that began as a request.
 
-Invoice numbers are sequential per foxer with no gaps, and the counter advances at issue
+Invoice numbers are sequential per foxxer with no gaps, and the counter advances at issue
 and never at draft — a number derived from a timestamp is not a sequence, and neither is
 one that skips when a draft is deleted.
 
@@ -182,10 +182,10 @@ accountant signs them off before a real invoice goes out.
 
 ### Chasing
 
-An overdue invoice queues a message, written for the foxer to send on WhatsApp: three
+An overdue invoice queues a message, written for the foxxer to send on WhatsApp: three
 days before due, then at 1, 7, 14 and 30 days past. Only **the stage actually reached**
 is offered — an invoice ten days late must not offer "due in three days" alongside two
-later messages. Sending stays the foxer's decision, because the customer is often
+later messages. Sending stays the foxxer's decision, because the customer is often
 someone they will meet again.
 
 ---
@@ -214,11 +214,11 @@ priority, **Stripe** for Apple Pay plus Terminal, **Revolut** if that is already
 business account.
 
 A deposit's life is a transition table, which is what stops it being both credited to an
-invoice and pocketed by the foxer:
+invoice and pocketed by the foxxer:
 
 ```
 held → credited    quote accepted; comes off the invoice
-     → captured    quote declined; the foxer keeps it
+     → captured    quote declined; the foxxer keeps it
      → refunded    nobody quoted, so nobody earned it
 ```
 
@@ -227,7 +227,7 @@ held → credited    quote accepted; comes off the invoice
 ## Who is signed in
 
 Both sides sign in with an email and a password (scrypt). Sessions are signed tokens
-carrying a `kind`, so a customer token can never be presented as a foxer one — the kind
+carrying a `kind`, so a customer token can never be presented as a foxxer one — the kind
 is inside the signature, and flipping it invalidates it.
 
 **A browser can hold both sessions at once.** A tradesperson books a plumber like anyone
@@ -235,13 +235,13 @@ else, so the two live in separate cookies (`fx_session`, `fx_customer`) and sepa
 storage keys. `web/public/js/api.js` picks the right token by URL prefix, so no route can
 accidentally be called with the wrong identity.
 
-**Job tokens survive alongside all this.** A foxer quoting a walk-in has nobody to attach
+**Job tokens survive alongside all this.** A foxxer quoting a walk-in has nobody to attach
 an account to, and the link they hand over still has to open, so a signed per-job token
 remains a credential in its own right — bound to exactly one reference, checked in
 constant time. A customer's own job list hands out those same tokens, so it is one page
 with one access check whether it was reached from the list or from a link.
 
-An account is only ever joined by signing into it. A walk-in a foxer writes up is never
+An account is only ever joined by signing into it. A walk-in a foxxer writes up is never
 merged into one on a matching phone number — a shared landline or a mistyped digit would
 otherwise drop a stranger's job into someone's job list.
 
@@ -278,10 +278,10 @@ each screen on each platform is built from these routes.
 |---|---|
 | `GET /api/v1/jobs/:ref` | The whole job: quotes, invoices, deposit, receipt |
 | `POST /api/v1/jobs/:ref/accept` | `{ quoteId, start }` — accepting books that hour |
-| `POST /api/v1/jobs/:ref/decline` | The foxer keeps the deposit |
+| `POST /api/v1/jobs/:ref/decline` | The foxxer keeps the deposit |
 | `POST /api/v1/jobs/:ref/review` | Only a job that was actually carried out |
 
-**Foxer console** — bearer token or `fx_session` cookie
+**Foxxer console** — bearer token or `fx_session` cookie
 
 | | |
 |---|---|
@@ -312,7 +312,7 @@ each screen on each platform is built from these routes.
 - **No tracking, no analytics, no third-party requests** on the web client. No web fonts
   are fetched.
 - **One implementation of the arithmetic.** The quote builder prices on the server on
-  every keystroke rather than doing the sums in the browser. A customer and a foxer
+  every keystroke rather than doing the sums in the browser. A customer and a foxxer
   looking at different totals is the one bug this app cannot afford.
 - **Ranking is explainable.** Search puts whoever can start soonest above whoever has a
   better star average, because "when can you come" is the question customers are really

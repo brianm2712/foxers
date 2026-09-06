@@ -8,7 +8,7 @@
  * a pro one: the kind is inside the signed payload, so flipping it invalidates
  * the signature.
  *
- * Job tokens survive alongside all this. A foxer quoting a walk-in has nobody
+ * Job tokens survive alongside all this. A foxxer quoting a walk-in has nobody
  * to attach an account to, and the link they hand over still has to open, so
  * a signed per-job token remains a credential in its own right.
  */

@@ -1,7 +1,7 @@
 /*
- * The foxer's side: everything a tradesperson sees after signing in.
+ * The foxxer's side: everything a tradesperson sees after signing in.
  *
- * The customer half of Foxers is a marketplace. This half is the job book —
+ * The customer half of Foxxers is a marketplace. This half is the job book —
  * what came in, what was agreed, what was done, and what is still owed. The
  * ordering of the console reflects the order of a working day: requests to
  * answer, quotes waiting on a yes, the diary, then the money.
@@ -83,12 +83,12 @@ function demoHint(emailIn, passIn) {
   if (!['localhost', '127.0.0.1', '::1'].includes(location.hostname)) return null;
   const use = (email) => {
     emailIn.value = email;
-    passIn.value = 'foxers-demo-2026';
+    passIn.value = 'foxxers-demo-2026';
     passIn.form.requestSubmit();
   };
   return el('div', { class: 'card', style: 'margin-top:1.5rem;max-width:420px' },
     el('h3', {}, 'Demo logins'),
-    el('small', { class: 'muted' }, 'Local copy only. Password foxers-demo-2026.'),
+    el('small', { class: 'muted' }, 'Local copy only. Password foxxers-demo-2026.'),
     el('div', { class: 'stack', style: 'margin-top:.7rem' },
       [['byrne.electrical@example.com', 'Byrne Electrical — the busy one'],
        ['nowak.plumbing.heating@example.com', 'Nowak Plumbing & Heating'],
@@ -705,7 +705,7 @@ export async function money(mount, ctx) {
 
 /*
  * The receipt exists the moment the money is taken, and the customer wants it
- * before the van moves. This puts the link in front of the foxer to send on.
+ * before the van moves. This puts the link in front of the foxxer to send on.
  */
 function receiptNotice(r) {
   const url = `${location.origin}${r.customerLink}`;

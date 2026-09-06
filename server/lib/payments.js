@@ -13,7 +13,7 @@
  *
  *   DEPOSIT  taken when the customer sends a request. Held, then either
  *            CREDITED against the invoice when the quote is accepted, or
- *            CAPTURED by the foxer when it is declined — payment for the
+ *            CAPTURED by the foxxer when it is declined — payment for the
  *            time spent pricing a job that went nowhere.
  *
  *   BALANCE  taken when the job is done, at the door, by card reader or
@@ -23,7 +23,7 @@
 const DEPOSIT_AMOUNT = { IE: 5, UK: 5 };
 
 /*
- * How the balance can be taken. `card_reader` is a tap on the foxer's own
+ * How the balance can be taken. `card_reader` is a tap on the foxxer's own
  * terminal; the wallets are a link or a QR the customer opens on their phone.
  * `cash` and `transfer` exist because they are what actually happens on half
  * the jobs and pretending otherwise puts the ledger out of step with reality.
@@ -41,7 +41,7 @@ const METHOD_BY_KEY = new Map(METHODS.map((m) => [m.key, m]));
 /*
  * A deposit's life. `held` is the only state money can leave from, and it can
  * only go one of three ways — which is what stops a deposit being both
- * credited to an invoice and pocketed by the foxer.
+ * credited to an invoice and pocketed by the foxxer.
  */
 const DEPOSIT_STATES = {
   held: ['credited', 'captured', 'refunded'],
@@ -69,7 +69,7 @@ const manual = {
   hold({ amount, currency }) {
     return { ref: `manual-hold-${Date.now().toString(36)}`, amount, currency, moved: false };
   },
-  /** Settle a held deposit to the foxer. */
+  /** Settle a held deposit to the foxxer. */
   capture({ payment }) {
     return { ref: `${payment.providerRef}-cap`, moved: false };
   },
@@ -113,7 +113,7 @@ function holdDeposit(store, { customerId, region, providerName }) {
     amount,
     currency,
     customerId,
-    proId: null,          // not known until a foxer quotes
+    proId: null,          // not known until a foxxer quotes
     ref: null,            // linked to the job once the request exists
     method: 'card',
     provider: provider.key,
@@ -140,7 +140,7 @@ function transitionDeposit(store, paymentId, to, extra = {}) {
   });
 }
 
-/** The quote was declined: the foxer is paid for the time they spent on it. */
+/** The quote was declined: the foxxer is paid for the time they spent on it. */
 function captureDeposit(store, paymentId, proId) {
   const payment = store.get('payments', paymentId);
   if (!payment) throw new PaymentError('No such payment', 404, 'not_found');

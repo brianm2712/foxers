@@ -5,7 +5,7 @@
  * in it to be worth looking at — a search that returns results, profiles with
  * real slots, and a job part-way through the invoice cycle.
  *
- *   FOXERS_DATA=./data node scripts/seed.js
+ *   FOXXERS_DATA=./data node scripts/seed.js
  */
 
 const path = require('path');
@@ -16,16 +16,16 @@ const D = require('../server/lib/domain');
 const { BY_KEY } = require('../server/lib/trades');
 const { slotsFor } = require('../server/lib/schedule');
 
-const DATA_DIR = process.env.FOXERS_DATA || path.join(__dirname, '..', 'data');
+const DATA_DIR = process.env.FOXXERS_DATA || path.join(__dirname, '..', 'data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
-const store = new Store(path.join(DATA_DIR, 'foxers.json'));
+const store = new Store(path.join(DATA_DIR, 'foxxers.json'));
 
 if (store.all('pros').length && !process.argv.includes('--force')) {
   console.error('Data already present. Pass --force to add the demo set anyway.');
   process.exit(1);
 }
 
-const PASSWORD = process.env.FOXERS_SEED_PASSWORD || 'foxers-demo-2026';
+const PASSWORD = process.env.FOXXERS_SEED_PASSWORD || 'foxxers-demo-2026';
 
 const PROS = [
   {
@@ -199,7 +199,7 @@ D.createQuote(store, declan.id, {
 });
 
 /*
- * And one that was turned down, so the foxer's earned deposits are not zero.
+ * And one that was turned down, so the foxxer's earned deposits are not zero.
  */
 const { request: turned } = D.createRequest(store, () => 'seed', {
   trade: 'electrician', area: 'dublin', urgency: 'planning',

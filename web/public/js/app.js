@@ -1,9 +1,9 @@
 /*
  * The shell: one router, two front doors.
  *
- * Foxers is two apps sharing a domain. A customer never signs in — they
+ * Foxxers is two apps sharing a domain. A customer never signs in — they
  * arrive, search, book or ask, and afterwards hold a job link that is its own
- * credential. A foxer signs in and gets the console: requests, quotes, the
+ * credential. A foxxer signs in and gets the console: requests, quotes, the
  * calendar, and the money. Both are served from this one file so a link from
  * either side lands in the right place without a page load.
  */
@@ -104,7 +104,7 @@ const CONSOLE_TABS = [
 ];
 
 /*
- * Three states, not two. Somebody can be signed in as a foxer, as a customer,
+ * Three states, not two. Somebody can be signed in as a foxxer, as a customer,
  * or as both — a tradesperson books a plumber like anyone else — so the bar
  * shows whichever sides of the app they actually have open to them.
  */
@@ -168,7 +168,7 @@ async function render() {
   if (!hit) {
     clear(mount).append(
       el('h1', {}, 'Nothing here'),
-      el('p', { class: 'muted' }, 'That address does not match anything on Foxers.'),
+      el('p', { class: 'muted' }, 'That address does not match anything on Foxxers.'),
       el('a', { class: 'btn primary', href: '/' }, 'Back to the start'));
     return;
   }
@@ -192,7 +192,7 @@ async function render() {
   } catch (err) {
     // A view that throws would otherwise leave the spinner spinning forever.
     if (token !== renderToken) return;
-    console.error('[foxers]', path, err);
+    console.error('[foxxers]', path, err);
     clear(target).append(
       notice('err', err.message || 'Something went wrong drawing this page.'),
       el('a', { class: 'btn', href: '/' }, 'Back to the start'));
@@ -200,7 +200,7 @@ async function render() {
 }
 
 /*
- * Ask who we are before the first paint. A signed-in foxer landing on "/"
+ * Ask who we are before the first paint. A signed-in foxxer landing on "/"
  * should see the console nav immediately rather than watch it appear a
  * moment later, and a stale token should be cleared before any view uses it.
  */

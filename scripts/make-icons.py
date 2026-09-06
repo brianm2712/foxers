@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-App icons, from the Foxers artwork.
+App icons, from the Foxxers artwork.
 
 The server and the web client have no dependencies at all. This is a
 development script — it runs on a workstation when the mark changes, and its
@@ -62,7 +62,7 @@ def main(source):
     side = max(mark.size)
     square = Image.new('RGB', (side, side), background)
     square.paste(mark, ((side - mark.width) // 2, (side - mark.height) // 2))
-    square.save(ICONS / 'foxer.png')
+    square.save(ICONS / 'foxxer.png')
 
     # Knock the background out so the mark can sit on the app's charcoal.
     alpha = ImageChops.difference(square, Image.new('RGB', square.size, background))
@@ -82,4 +82,4 @@ def main(source):
 
 
 if __name__ == '__main__':
-    main(sys.argv[1] if len(sys.argv) > 1 else str(ICONS / 'foxer.png'))
+    main(sys.argv[1] if len(sys.argv) > 1 else str(ICONS / 'foxxer.png'))

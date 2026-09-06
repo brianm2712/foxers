@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /*
- * Foxers — job software and booking marketplace for trades.
+ * Foxxers — job software and booking marketplace for trades.
  *
  * One HTTP server, one JSON API, three clients: the web PWA in ../web, and
  * the iOS and iPadOS apps in ../ios. The API is the contract between them, so
@@ -27,14 +27,14 @@ const pay = require('./lib/payments');
 const { VERSION, API_VERSION } = require('./version');
 
 const ROOT = path.resolve(__dirname, '..');
-const DATA_DIR = process.env.FOXERS_DATA || path.join(ROOT, 'data');
+const DATA_DIR = process.env.FOXXERS_DATA || path.join(ROOT, 'data');
 const WEB_ROOT = fs.realpathSync(path.join(ROOT, 'web', 'public'));
-const PORT = Number(process.env.FOXERS_PORT || 8120);
-const HOST = process.env.FOXERS_HOST || '127.0.0.1';
-const PUBLIC_SIGNUP = process.env.FOXERS_OPEN_SIGNUP !== '0';
+const PORT = Number(process.env.FOXXERS_PORT || 8120);
+const HOST = process.env.FOXXERS_HOST || '127.0.0.1';
+const PUBLIC_SIGNUP = process.env.FOXXERS_OPEN_SIGNUP !== '0';
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
-const store = new Store(path.join(DATA_DIR, 'foxers.json'));
+const store = new Store(path.join(DATA_DIR, 'foxxers.json'));
 
 /* Session/token signing key. Generated once, never in argv or the image. */
 const SECRET = (() => {
@@ -60,7 +60,7 @@ const SECRET = (() => {
  * the production ones and apply unless the environment says otherwise.
  */
 const ceiling = (name, fallback) => {
-  const v = Number(process.env[`FOXERS_LIMIT_${name}`]);
+  const v = Number(process.env[`FOXXERS_LIMIT_${name}`]);
   return Number.isFinite(v) && v > 0 ? v : fallback;
 };
 
@@ -344,7 +344,7 @@ on('POST', '/api/v1/requests', async (req, res) => {
  * for one job must not open another.
  */
 function jobGate(req, res, ref, url) {
-  const token = url.searchParams.get('t') || req.headers['x-foxers-job-token'];
+  const token = url.searchParams.get('t') || req.headers['x-foxxers-job-token'];
   if (!auth.readJobToken(SECRET, token, ref)) {
     H.fail(req, res, 403, 'That link is not valid for this job', 'forbidden');
     return false;
@@ -440,7 +440,7 @@ on('PUT', '/api/v1/me', async (req, res) => {
 /*
  * The customer's own job list. Each row carries the job token, because the
  * job page is addressed by ref plus token whether it was reached from this
- * list or from a link a foxer sent — one page, one access check.
+ * list or from a link a foxxer sent — one page, one access check.
  */
 on('GET', '/api/v1/me/jobs', async (req, res) => {
   const customer = requireCustomer(req, res); if (!customer) return;
@@ -453,7 +453,7 @@ on('GET', '/api/v1/me/jobs', async (req, res) => {
      * What to call this job on the customer's list. "Electrician" is the
      * trade, not the job, and a list of five of those tells them nothing —
      * so prefer the name of the work: the service booked, or the title the
-     * foxer put on the quote, and fall back to their own words.
+     * foxxer put on the quote, and fall back to their own words.
      */
     const quoted = quotes.find((q) => q.status === 'accepted') || quotes[0];
     const said = String(j.description || '').split(/(?<=[.!?])\s|,/)[0].trim();
@@ -800,7 +800,7 @@ on('POST', '/api/v1/pro/invoices', async (req, res) => {
  * Taking the money and issuing the receipt are the same request. `method`
  * says how it was taken — a tap on the reader, a wallet, or a transfer that
  * already landed — and the receipt comes straight back so it can be handed
- * over before the foxer leaves the driveway.
+ * over before the foxxer leaves the driveway.
  */
 on('POST', '/api/v1/pro/invoices/:id/paid', async (req, res, p) => {
   const pro = requirePro(req, res); if (!pro) return;
@@ -823,7 +823,7 @@ on('POST', '/api/v1/pro/invoices/:id/paid', async (req, res, p) => {
 });
 
 /*
- * The foxer's own free slots, for choosing the times a quote offers. Same
+ * The foxxer's own free slots, for choosing the times a quote offers. Same
  * derivation the customer's booking form uses, so the two cannot disagree.
  */
 on('GET', '/api/v1/pro/slots', async (req, res, _p, url) => {
@@ -907,7 +907,7 @@ const APP_PATHS = [/^\/$/, /^\/find/, /^\/ask/, /^\/pro(\/|$)/, /^\/j\//, /^\/bo
   /^\/dash(\/|$)/, /^\/signup/, /^\/login/, /^\/about/];
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || 'foxers.local'}`);
+  const url = new URL(req.url, `http://${req.headers.host || 'foxxers.local'}`);
   const pathname = url.pathname;
 
   res.setHeader('x-content-type-options', 'nosniff');
@@ -941,7 +941,7 @@ const server = http.createServer(async (req, res) => {
     // A 5xx is replaced by Cloudflare's own page when this sits behind a
     // tunnel, so anything the caller needs to read must not be one.
     const status = err.status || (err instanceof D.DomainError ? err.status : 500);
-    if (status >= 500) console.error('[foxers]', req.method, pathname, err);
+    if (status >= 500) console.error('[foxxers]', req.method, pathname, err);
     H.fail(req, res, status, status >= 500 ? 'Something went wrong' : err.message, err.code || 'error');
   }
 });
@@ -951,11 +951,11 @@ server.requestTimeout = 60_000;
 
 if (require.main === module) {
   server.listen(PORT, HOST, () => {
-    console.log(`[foxers] listening on http://${HOST}:${PORT}  data=${DATA_DIR}`);
+    console.log(`[foxxers] listening on http://${HOST}:${PORT}  data=${DATA_DIR}`);
   });
   for (const sig of ['SIGINT', 'SIGTERM']) {
     process.on(sig, () => {
-      console.log(`[foxers] ${sig} — flushing`);
+      console.log(`[foxxers] ${sig} — flushing`);
       store.saveNow();
       server.close(() => process.exit(0));
       setTimeout(() => process.exit(0), 3000).unref();

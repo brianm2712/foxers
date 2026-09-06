@@ -5,7 +5,7 @@
  * name, number and address come from the session rather than being retyped
  * into every form. The job page is still addressed by ref plus token, because
  * it is the same page whether it was reached from the customer's own job list
- * or from a link the foxer sent.
+ * or from a link the foxxer sent.
  */
 
 import { api, meta, jobs, session, myJobs, saveMe, customerLogin, customerSignup } from './api.js';
@@ -189,7 +189,7 @@ export async function find(mount, ctx) {
 /*
  * Initials from the business name. Two letters where there are two words to
  * take them from, otherwise the first two of the only word — "Byrne
- * Electrical" is BE, "Foxers" is FO.
+ * Electrical" is BE, "Foxxers" is FO.
  */
 export function initials(name) {
   const words = String(name || '').trim().split(/\s+/).filter(Boolean);
@@ -211,7 +211,7 @@ function proCard(p, m) {
           p.acceptsEmergency ? el('span', { class: 'chip amber' }, 'Emergency callouts') : null),
         el('div', { class: 'row', style: 'margin:.35rem 0' },
           stars(p.rating.average),
-          el('small', {}, p.rating.count ? `${p.rating.average} · ${p.rating.count} reviews` : 'New to Foxers')),
+          el('small', {}, p.rating.count ? `${p.rating.average} · ${p.rating.count} reviews` : 'New to Foxxers')),
         el('p', { class: 'muted', style: 'margin:.4rem 0' }, p.bio || tradeNames.join(', ')),
         el('div', { class: 'row' }, tradeNames.map((t) => el('span', { class: 'chip' }, t)))),
 
@@ -247,7 +247,7 @@ export async function profile(mount, ctx) {
       el('h1', { style: 'margin:0' }, p.business)),
     el('div', { class: 'row', style: 'margin-top:.5rem' },
       stars(p.rating.average),
-      el('small', {}, p.rating.count ? `${p.rating.average} from ${p.rating.count} reviews` : 'New to Foxers'),
+      el('small', {}, p.rating.count ? `${p.rating.average} from ${p.rating.count} reviews` : 'New to Foxxers'),
       p.verified ? el('span', { class: 'chip good' }, 'Verified') : null,
       p.vatRegistered ? el('span', { class: 'chip' }, 'VAT registered') : null,
       p.acceptsEmergency ? el('span', { class: 'chip amber' }, 'Emergency callouts') : null),
@@ -277,7 +277,7 @@ export async function profile(mount, ctx) {
 
     p.reviews.length ? frag(
       el('div', { class: 'section-head' }, el('h2', {}, 'Reviews')),
-      el('p', { class: 'muted' }, 'Only left by customers with a completed, invoiced job on Foxers.'),
+      el('p', { class: 'muted' }, 'Only left by customers with a completed, invoiced job on Foxxers.'),
       el('div', { class: 'stack' }, p.reviews.map((r) => el('div', { class: 'card' },
         el('div', { class: 'row between' },
           stars(r.rating),

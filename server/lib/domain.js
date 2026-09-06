@@ -34,7 +34,7 @@ const notFound = (what) => { throw new DomainError(`${what} not found`, 404, 'no
 
 /*
  * Invoice prefix. Shared across pros it would be ambiguous to a customer
- * holding two Foxers invoices, so it defaults to the business initials.
+ * holding two Foxxers invoices, so it defaults to the business initials.
  */
 function initials(business) {
   const letters = String(business).normalize('NFKD').replace(/[^A-Za-z ]/g, '')
@@ -199,7 +199,7 @@ function addService(store, proId, input) {
 
 /*
  * Customers hold an account now, so a phone number is no longer an identity.
- * This still exists for the one case with nobody signed in: a foxer writing
+ * This still exists for the one case with nobody signed in: a foxxer writing
  * up a walk-in, where the only record of who it was is what they typed.
  *
  * It must never merge into an account. Two people share a landline, a builder
@@ -388,7 +388,7 @@ function createRequest(store, secretIssuer, input) {
 
   /*
    * The deposit is taken to send the request, not to accept the quote. It is
-   * what makes a request worth a foxer's time to price: declined, they keep
+   * what makes a request worth a foxxer's time to price: declined, they keep
    * it; accepted, it comes off the invoice, so it costs a real customer
    * nothing at all. Held here, settled by acceptQuote or declineQuote.
    */
@@ -440,7 +440,7 @@ function createQuote(store, proId, input) {
   });
 
   /*
-   * The times the foxer is offering. They are checked against the same
+   * The times the foxxer is offering. They are checked against the same
    * availability the booking form uses, so a quote can never offer an hour
    * that is already gone — and accepting one is what puts it in the diary.
    */
@@ -503,7 +503,7 @@ function offerableSlots(store, pro, minutes, wanted) {
 
 /*
  * Accepting is the moment everything becomes real: the price is locked, the
- * deposit stops being the foxer's to keep and comes off the bill instead, and
+ * deposit stops being the foxxer's to keep and comes off the bill instead, and
  * the chosen hour turns into a booking in the diary. Doing any one of those
  * without the others is how a customer ends up with an agreed price and no
  * date, which is the failure this whole app exists to stop.
@@ -556,7 +556,7 @@ function acceptQuote(store, quoteId, who = 'customer', choice = {}) {
     agreed: JSON.parse(JSON.stringify(quote.totals)),
   });
 
-  // The deposit was the foxer's to keep only if this went nowhere.
+  // The deposit was the foxxer's to keep only if this went nowhere.
   const deposit = depositForQuote(store, quote);
   if (deposit && deposit.status === 'held') pay.creditDeposit(store, deposit.id, pro.id);
 
@@ -584,7 +584,7 @@ function declineQuote(store, quoteId, reason = '') {
     status: 'declined', declinedAt: new Date().toISOString(), declineReason: String(reason).slice(0, 500),
   });
 
-  // The foxer priced a job that is not happening. This is what they get for it.
+  // The foxxer priced a job that is not happening. This is what they get for it.
   const deposit = depositForQuote(store, quote);
   if (deposit && deposit.status === 'held') pay.captureDeposit(store, deposit.id, quote.proId);
 
