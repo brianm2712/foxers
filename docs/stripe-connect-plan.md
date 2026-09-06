@@ -111,23 +111,54 @@ This one is a brand decision as much as a technical one.
 Nothing can charge anything, so it was safe to build and ship first.
 
 - ✅ `pros.stripeAccountId` and a cached `pros.payouts` status
-- ✅ `POST /api/v1/pro/payouts/onboard` — creates an Express account **once**
+- ✅ `POST /api/v1/pro/payouts/onboard` — creates a connected account **once**
   and mints a fresh link on every call, since links are single-use
 - ✅ `GET /api/v1/pro/payouts` — live status, and it writes the cache
 - ✅ A card in the **Business** tab: not started / incomplete / ready, with what
   Stripe still wants translated out of Stripe's vocabulary
-  (`individual.id_number` → "your PPS or National Insurance number")
+  (`identity.individual.date_of_birth.day` and its two siblings → "your date
+  of birth", once)
 - ✅ A step in the new-foxxer setup guide
-- ✅ `account.updated` webhook to keep the status honest
+- ✅ a webhook that keeps the status honest, taking both event families
 
-`tests/connect.test.js` — 10 assertions, a real server against a strict mock
-Stripe. Two of them are load-bearing beyond the happy path: exactly one Express
-account is ever created for a foxxer (a second would split their money across
-two accounts), and **loading the dashboard makes no outbound call to Stripe** —
-it reads the cache the webhook and the payouts card keep honest.
+`tests/connect.test.js` — 12 assertions, a real server against a strict mock
+Stripe. Three are load-bearing beyond the happy path: exactly one account is
+ever created for a foxxer (a second would split their money across two
+accounts), **loading the dashboard makes no outbound call to Stripe** (it reads
+the cache the webhook keeps honest), and the webhook handles the event family
+Stripe actually sends.
 
-Still to do before this is real: **it has never spoken to Stripe.** It needs a
-test-mode key and one round trip against the sandbox.
+### It has now spoken to Stripe, and that changed the code twice
+
+Run against a real sandbox, which found two things a mock never would.
+
+**Accounts v1 `type: 'express'` is the legacy path.** Connected accounts are now
+created with the Accounts v2 API (`POST /v2/core/accounts`), which replaces the
+opaque account type with stated responsibilities — the platform collects fees
+and carries losses, the foxxer gets an Express-style dashboard — and takes
+`merchant` and `recipient` configurations rather than a `capabilities` list. v2
+speaks JSON where v1 speaks form encoding, and it returns `null` for anything
+not named in `include`, which reads exactly like an account with no
+capabilities. The pinned API version is no longer cosmetic: the v2 endpoints
+reject old versions outright rather than falling back.
+
+**A classic webhook endpoint does not receive v2 events.** The handler was
+written for the thin `v2.core.account[…]` events the v2 documentation shows.
+Pointing the Stripe CLI at a running server and reading what actually turned up
+showed `account.updated`, `capability.updated` and `person.*` — the v1 connect
+events — for a v2 account. The thin events only reach a separately configured
+event destination. The handler had been returning 200 and ignoring every one of
+them: it would have passed its tests and tracked nothing in production. It now
+takes both families, and since neither is parsed for state — both just mean
+"re-read the account" — supporting both costs one condition, not one code path.
+
+Verified end to end: a real connected account created through the app, a real
+hosted-onboarding link opened and branded, real requirements parsed into the
+Business tab, and a real connect event received, matched to a foxxer, and
+applied.
+
+**The money paths remain unexercised.** No charge, deposit, capture or transfer
+has ever been made against Stripe.
 
 ### Phase 2 — invoice payments  (~1 day)
 
@@ -159,9 +190,9 @@ approve the platform.
 ## What already exists
 
 - `server/lib/providers/stripe.js` — the adapter. Destination charges,
-  authorise/capture/cancel/refund, transfers, account creation, onboarding
-  links, and webhook signature verification. Form encoding and minor units are
-  handled and tested.
+  authorise/capture/cancel/refund, transfers, **Accounts v2** account creation,
+  onboarding links (still v1, even for v2 accounts), and webhook signature
+  verification. Both encodings, and minor units, are handled and tested.
 - `server/lib/payments.js` — the seam, with the `pending` state a real rail
   needs and webhook-driven settlement.
 - `server/lib/providers/revolut.js` — single-merchant, so wrong for

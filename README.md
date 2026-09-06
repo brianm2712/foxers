@@ -61,7 +61,7 @@ The foxxer sign-in page lists the demo logins, but only when the hostname is loc
 
 ```sh
 node tests/api.test.js       # 41 — end-to-end over real HTTP
-node tests/connect.test.js   # 10 — Stripe Connect onboarding, against a strict mock
+node tests/connect.test.js   # 12 — Stripe Connect onboarding, against a strict mock
 node tests/revolut.test.js   #  8 — the Revolut adapter against a strict mock
 node tests/webhook.test.js   #  5 — webhook signatures, on a real server
 node tests/schedule.test.js  #  7 — slot generation, DST, busy-time subtraction
@@ -102,7 +102,7 @@ server/index.js         one HTTP server, one router, every route
 server/lib/domain.js    the business operations — everything that changes state
 server/lib/tax.js       IE and UK construction tax. Rates are data, not literals
 server/lib/payments.js  deposits, taking money, and the provider seam
-server/lib/providers/   payment rails. revolut.js is the only outbound code
+server/lib/providers/   payment rails — the only code here that talks to the internet
 server/lib/schedule.js  availability → bookable slots, DST-correct
 server/lib/trades.js    the trade taxonomy: what is bookable, what can only be quoted
 server/lib/store.js     append-and-flush JSON store
@@ -119,7 +119,7 @@ scripts/seed.js         demo data — a marketplace worth looking at
 scripts/foxxers          start it if it is not running, then open it
 scripts/install-desktop.sh  applications-menu and desktop launcher, with the icon
 scripts/make-icons.py   app icons from the artwork (dev only, needs Pillow)
-tests/                  five suites, 69 assertions
+tests/                  six suites, 82 assertions
 ```
 
 `data/` is gitignored. It holds every password hash and the key that signs every
@@ -256,8 +256,16 @@ regulated activity under PSD2. **Stripe Connect** gives each foxxer their own ac
 so funds settle to them and the platform takes a stated fee without ever holding
 anything. `docs/stripe-connect-plan.md` has the full scope.
 
-**Phase 1 — onboarding — is built.** No money moves; a foxxer gets a Stripe Express
-account and the app learns whether they can be paid.
+**Phase 1 — onboarding — is built and has been run against real Stripe.** No money
+moves; a foxxer gets a connected account and the app learns whether they can be paid.
+
+Connected accounts use the **Accounts v2 API** (`/v2/core/accounts`), not the legacy
+`type: 'express'` shorthand. Instead of an opaque account type, the responsibilities are
+stated: the platform collects fees and carries losses, the foxxer gets an Express-style
+Stripe dashboard, and two configurations are requested — `merchant` so an invoice can be
+charged to them, `recipient` so a captured deposit can be transferred to them. v2 speaks
+JSON where v1 speaks form encoding, and returns `null` for anything not named in
+`include`; `stripe.js` handles both and always asks.
 
 ```sh
 FOXXERS_PAYMENTS=stripe
@@ -270,15 +278,26 @@ FOXXERS_PLATFORM_FEE_CENTS=0
 
 Point the Stripe webhook at `POST /api/v1/webhooks/stripe`.
 
+**Which events actually arrive is not what the v2 documentation suggests.** A v2 account
+emits thin `v2.core.account[…]` events, but those go to a separately configured event
+destination — a classic webhook endpoint receives the **v1 connect events**
+(`account.updated`, `capability.updated`, `person.*`) even for a v2 account. This was
+found by pointing the Stripe CLI at a running server and reading what turned up. The
+handler takes both families and treats them identically: neither is parsed for state, it
+just re-reads the account, so there is no payload to trust and no second code path.
+
 **A foxxer who has not onboarded is not hidden and not blocked.** They appear in search,
 take requests and quote like anyone else — they simply cannot be paid *through the app*
 yet, and the Business tab says so in amber rather than red. Putting ID and a bank
 account between signing up and getting any value is how a marketplace never reaches its
 first hundred trades. Cash, transfer and their own card reader are unaffected.
 
-> **It has never made a request to Stripe either.** Same standing as the Revolut
-> adapter: written to the documented API, exercised against a strict mock, no
-> credentials on this machine. The API version is pinned in `stripe.js`.
+> **Onboarding has been run against real Stripe; the money paths have not.** A real
+> connected account was created through the app in a sandbox, a real hosted-onboarding
+> link opened, real requirements were parsed, and a real connect event was received and
+> acted on. Nothing in Phases 2–4 — charging an invoice, holding or capturing a deposit —
+> has been exercised against Stripe at all. The API version is pinned in `stripe.js` and
+> is not optional: the v2 endpoints reject older versions outright.
 
 ---
 
@@ -383,8 +402,8 @@ each screen on each platform is built from these routes.
 
 - **The iOS and iPadOS clients.** `ios/` is empty. The API above is the contract they are
   meant to be built against, and `web/public/js/api.js` is the file to mirror.
-- **A verified payment provider.** Neither adapter has ever spoken to its API. Both need
-  a sandbox key and a real round trip before either sees a card.
+- **A verified payment path.** Stripe onboarding has had a real round trip; no charge,
+  deposit or transfer has. The Revolut adapter has never spoken to Revolut at all.
 - **Stripe Connect phases 2–4.** Onboarding is built. Taking an invoice as a destination
   charge, authorising and capturing deposits, and going live are scoped in
   `docs/stripe-connect-plan.md` — along with three decisions still open: the platform

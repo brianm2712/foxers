@@ -23,7 +23,16 @@
  *              A quote that is accepted cancels the authorisation instead, so
  *              on the happy path no money moves and nobody pays a fee.
  *
- * Stripe speaks FORM ENCODING, not JSON, and nests with square brackets.
+ * TWO APIS, TWO ENCODINGS
+ *
+ * Connected accounts are Accounts v2 (`/v2/core/accounts`), which is Stripe's
+ * supported path — the v1 `type: 'express'` shorthand is legacy. v2 takes
+ * JSON; v1 takes form encoding nested with square brackets. Account links
+ * stayed on v1, so this file speaks both, and `call` picks by path.
+ *
+ * v2 also returns null for anything not named in `include`, which reads
+ * exactly like "this account has no capabilities" if you forget it.
+ *
  * Amounts are integer minor units.
  *
  * NOT YET RUN AGAINST STRIPE. Written to the documented API and exercised
@@ -34,8 +43,10 @@
 const crypto = require('crypto');
 
 const API = 'https://api.stripe.com';
-/* Pinned: Stripe dates its API and old versions keep working. Bump on purpose. */
-const API_VERSION = '2024-06-20';
+/* Pinned: Stripe dates its API and old versions keep working. Bump on purpose.
+ * This one is not optional — the v2 endpoints reject older versions outright
+ * rather than falling back. */
+const API_VERSION = '2026-04-22.dahlia';
 const TIMEOUT_MS = 15_000;
 
 const toMinor = (amount) => Math.round(Number(amount) * 100);
@@ -75,10 +86,12 @@ function create({ secretKey, base, publicUrl, feeBps = 0, feeFlat = 0 } = {}) {
   if (!key) throw new Error('Stripe needs FOXXERS_STRIPE_SECRET_KEY');
 
   async function call(method, path, data, { idempotencyKey, onBehalfOf } = {}) {
+    // The encoding follows the API, not the caller: v2 is JSON, v1 is form.
+    const isV2 = path.startsWith('/v2/');
     const headers = {
       authorization: `Bearer ${key}`,
       'stripe-version': API_VERSION,
-      'content-type': 'application/x-www-form-urlencoded',
+      'content-type': isV2 ? 'application/json' : 'application/x-www-form-urlencoded',
     };
     if (idempotencyKey) headers['idempotency-key'] = idempotencyKey;
     // Acting as a connected account, for the calls that must be made as them.
@@ -88,7 +101,7 @@ function create({ secretKey, base, publicUrl, feeBps = 0, feeFlat = 0 } = {}) {
     try {
       res = await fetch(root + path, {
         method, headers,
-        body: data === undefined ? undefined : form(data),
+        body: data === undefined ? undefined : (isV2 ? JSON.stringify(data) : form(data)),
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
     } catch (err) {
@@ -203,13 +216,30 @@ function create({ secretKey, base, publicUrl, feeBps = 0, feeFlat = 0 } = {}) {
      * the result; Foxxers stores an id and never sees a bank detail.
      */
     async createAccount({ email, business, country = 'IE' }) {
-      const acct = await call('POST', '/v1/accounts', {
-        type: 'express',
-        country,
-        email,
-        business_type: 'individual',
-        business_profile: { name: business, product_description: 'Trade services booked through Foxxers' },
-        capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
+      const acct = await call('POST', '/v2/core/accounts', {
+        contact_email: email,
+        display_name: business,
+        // Stripe's own dashboard for the foxxer. They are sole traders, not
+        // finance teams; a full dashboard is more than they asked for.
+        dashboard: 'express',
+        identity: { country: String(country).toLowerCase(), entity_type: 'individual' },
+        configuration: {
+          // Two configurations, for the two ways money reaches a foxxer.
+          // `merchant` lets an invoice be charged and routed to them.
+          merchant: { capabilities: { card_payments: { requested: true } } },
+          // `recipient` lets a captured deposit be transferred to them, which
+          // is a separate movement with no charge of its own.
+          recipient: {
+            capabilities: { stripe_balance: { stripe_transfers: { requested: true } } },
+          },
+        },
+        defaults: {
+          currency: country === 'UK' || country === 'GB' ? 'gbp' : 'eur',
+          // The platform carries losses and pays the fees. This is the
+          // liability decision, stated rather than implied by an account type.
+          responsibilities: { fees_collector: 'application', losses_collector: 'application' },
+        },
+        include: ['configuration.merchant', 'configuration.recipient', 'requirements'],
       });
       return { id: acct.id };
     },
@@ -224,14 +254,37 @@ function create({ secretKey, base, publicUrl, feeBps = 0, feeFlat = 0 } = {}) {
       return { url: link.url, expiresAt: link.expires_at };
     },
 
+    /*
+     * What a v2 account can currently do. There is no `charges_enabled` flag
+     * any more: each capability carries its own status, and the ones that
+     * matter here are being able to take a card and being able to be paid out.
+     *
+     * The `include` list is load-bearing — without it every one of these comes
+     * back null, which is indistinguishable from a foxxer who has done nothing.
+     */
     async account({ accountId }) {
-      const a = await call('GET', `/v1/accounts/${encodeURIComponent(accountId)}`);
+      const include = ['configuration.merchant', 'configuration.recipient', 'requirements']
+        .map((i) => `include=${encodeURIComponent(i)}`).join('&');
+      const a = await call('GET', `/v2/core/accounts/${encodeURIComponent(accountId)}?${include}`);
+
+      const merchant = a.configuration?.merchant?.capabilities || {};
+      const recipient = a.configuration?.recipient?.capabilities || {};
+      const active = (cap) => cap?.status === 'active';
+      const balanceOf = (c) => c?.stripe_balance || {};
+
+      const entries = a.requirements?.entries || [];
+      // Only what the foxxer can actually act on. Requirements Stripe is
+      // working through itself are not their homework, and showing them as
+      // such leaves someone refreshing a page waiting for a bank to answer.
+      const theirs = entries.filter((e) => e.awaiting_action_from === 'user');
+
       return {
         id: a.id,
-        chargesEnabled: !!a.charges_enabled,
-        payoutsEnabled: !!a.payouts_enabled,
-        detailsSubmitted: !!a.details_submitted,
-        needs: a.requirements?.currently_due || [],
+        chargesEnabled: active(merchant.card_payments),
+        payoutsEnabled: active(balanceOf(recipient).payouts) || active(balanceOf(merchant).payouts),
+        transfersEnabled: active(balanceOf(recipient).stripe_transfers),
+        detailsSubmitted: theirs.length === 0,
+        needs: theirs.map((e) => e.description).filter(Boolean),
       };
     },
   };

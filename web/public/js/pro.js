@@ -1057,16 +1057,35 @@ export async function hours(mount, ctx) {
  */
 const NEED_NAMES = {
   'external_account': 'your bank account',
-  'individual.id_number': 'your PPS or National Insurance number',
-  'individual.verification.document': 'photo ID',
-  'individual.verification.additional_document': 'a second document',
-  'individual.address.line1': 'your address',
-  'individual.dob.day': 'your date of birth',
-  'business_profile.url': 'a website or social page',
-  'business_profile.mcc': 'what kind of work you do',
-  'tos_acceptance.date': 'accepting Stripe’s terms',
+  'identity.individual.id_number': 'your PPS or National Insurance number',
+  'identity.individual.given_name': 'your first name',
+  'identity.individual.surname': 'your surname',
+  'identity.individual.email': 'your email',
+  'identity.individual.phone': 'your phone number',
+  'identity.individual.nationalities': 'your nationality',
+  'identity.individual.address': 'your address',
+  'identity.individual.date_of_birth': 'your date of birth',
+  'identity.individual.identification_document': 'photo ID',
+  'identity.attestations.terms_of_service': 'accepting Stripe’s terms',
+  'defaults.profile.business_url': 'a website or social page',
+  'configuration.merchant.mcc': 'what kind of work you do',
 };
-const needName = (k) => NEED_NAMES[k] || String(k).split('.').pop().replace(/_/g, ' ');
+
+/*
+ * Stripe asks for a date of birth as three separate requirements — day, month
+ * and year — and an address as four. Listed one by one that reads as seven
+ * things to go and find rather than two. Trim the leaf off and let the map
+ * answer for the group.
+ */
+const NEED_GROUPS = [
+  'identity.individual.date_of_birth', 'identity.individual.address',
+  'identity.attestations.terms_of_service', 'identity.individual.identification_document',
+];
+const needName = (k) => {
+  const key = String(k);
+  const group = NEED_GROUPS.find((g) => key.startsWith(g));
+  return NEED_NAMES[group || key] || key.split('.').pop().replace(/_/g, ' ');
+};
 
 export async function settings(mount, ctx) {
   clear(mount).append(loading());
@@ -1181,7 +1200,8 @@ export async function settings(mount, ctx) {
         el('span', { class: `chip ${said.chip[0]}` }, said.chip[1])),
       el('p', { class: 'muted', style: 'margin:.6rem 0 .9rem' }, said.body),
       s.needs.length ? el('p', { class: 'muted', style: 'margin:0 0 .9rem' },
-        'Stripe is waiting on: ', el('strong', {}, s.needs.map(needName).join(', '))) : null,
+        'Stripe is waiting on: ',
+        el('strong', {}, [...new Set(s.needs.map(needName))].join(', '))) : null,
       go);
   };
 

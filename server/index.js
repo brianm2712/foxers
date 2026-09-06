@@ -489,10 +489,16 @@ on('POST', '/api/v1/webhooks/revolut', async (req, res) => {
 });
 
 /*
- * Stripe. Phase 1 carries one event: a connected account changed, so what we
- * believe about whether a foxxer can be paid has to change with it. Onboarding
- * finishes on Stripe's pages, where this app never sees the customer come
- * back, so the webhook is the only thing that learns it promptly.
+ * Stripe. Phase 1 carries one kind of event: something about a connected
+ * account changed, so what we believe about whether a foxxer can be paid has
+ * to change with it. Onboarding finishes on Stripe's own pages, where this app
+ * never sees the foxxer come back, so the webhook is the only thing that
+ * learns it promptly.
+ *
+ * A v2 event is thin — it names the account and where to read it, and carries
+ * none of its state. That is a better shape than it first looks: there is no
+ * payload to trust, so the handler re-reads the account and the cache can only
+ * ever be written from something Stripe actually said.
  */
 on('POST', '/api/v1/webhooks/stripe', async (req, res) => {
   const secret = process.env.FOXXERS_STRIPE_WEBHOOK_SECRET;
@@ -511,22 +517,39 @@ on('POST', '/api/v1/webhooks/stripe', async (req, res) => {
 
   let event;
   try { event = JSON.parse(raw); } catch { return H.fail(req, res, 400, 'Not JSON', 'bad_request'); }
-  if (event.type !== 'account.updated') return H.json(res, 200, { ok: true, ignored: event.type });
 
-  const a = event.data?.object || {};
-  const pro = a.id ? store.find('pros', (p) => p.stripeAccountId === a.id) : null;
+  /*
+   * Two event families say the same thing, and this endpoint gets whichever
+   * Stripe decides to send.
+   *
+   *   v2.core.account…  thin events, delivered to a v2 event destination.
+   *   account.updated   the v1 connect events a classic webhook endpoint
+   *   capability.updated actually receives — including for v2 accounts. An
+   *   person.*          endpoint that handles only the thin events passes its
+   *                     tests and tracks nothing in production. Verified the
+   *                     hard way against real Stripe.
+   *
+   * Both mean "go and look again", so neither is parsed for state. Matched by
+   * prefix because Stripe adds more as capabilities grow.
+   */
+  const type = String(event.type || '');
+  const watched = type.startsWith('v2.core.account')
+    || type === 'account.updated' || type.startsWith('capability.') || type.startsWith('person.');
+  if (!watched) return H.json(res, 200, { ok: true, ignored: type });
+
+  // v2 names it on `related_object`; a v1 connect event names it on the
+  // envelope, since the object itself may be a capability or a person.
+  const accountId = event.related_object?.id || event.account || event.data?.object?.id;
+  const pro = accountId ? store.find('pros', (p) => p.stripeAccountId === accountId) : null;
   // An account we do not know about is not worth retrying — say so, or Stripe
   // redelivers it for days.
   if (!pro) {
-    store.log('webhook.unknown', String(a.id || ''), { event: event.type });
+    store.log('webhook.unknown', String(accountId || ''), { event: type });
     return H.json(res, 200, { ok: true, matched: false });
   }
 
-  cachePayouts(pro, {
-    chargesEnabled: a.charges_enabled, payoutsEnabled: a.payouts_enabled,
-    detailsSubmitted: a.details_submitted, needs: a.requirements?.currently_due || [],
-  });
-  store.log('webhook.applied', pro.id, { event: event.type, charges: !!a.charges_enabled });
+  const fresh = await refreshPayouts(pro);
+  store.log('webhook.applied', pro.id, { event: type, charges: !!fresh.payouts?.chargesEnabled });
   H.json(res, 200, { ok: true, matched: true });
 });
 
