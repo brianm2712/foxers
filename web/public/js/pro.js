@@ -719,7 +719,7 @@ function receiptNotice(r) {
 
 function invoiceTable(rows, reload, methods = []) {
   const wrap = el('div', { class: 'table-wrap' });
-  wrap.append(el('table', {},
+  wrap.append(el('table', { class: 'stacks' },
     el('thead', {}, el('tr', {},
       el('th', {}, 'Invoice'), el('th', {}, 'Customer'), el('th', {}, 'Due'),
       el('th', { class: 'right' }, 'Total'), el('th', { class: 'right' }, 'Withheld'),
@@ -743,20 +743,26 @@ function invoiceTable(rows, reload, methods = []) {
           reload();
         } catch (err) { fail(wrap, err); }
       });
+      /*
+       * Every cell is labelled. On a phone the table collapses to one card
+       * per invoice and these labels become the row headings — a seven
+       * column table at 390px is unreadable, and this is the screen a foxxer
+       * is looking at while standing in someone's kitchen.
+       */
       return el('tr', {},
-        el('td', {}, el('span', { class: 'mono' }, i.number),
+        el('td', { dataset: { label: 'Invoice' } }, el('span', { class: 'mono' }, i.number),
           i.chases ? el('div', {}, el('small', {}, `${i.chases} chase(s) sent`)) : null),
-        el('td', {}, i.customer?.name || '—'),
-        el('td', {},
+        el('td', { dataset: { label: 'Customer' } }, i.customer?.name || '—'),
+        el('td', { dataset: { label: 'Due' } },
           dateOnly(i.dueAt),
-          i.overdueDays ? el('div', {}, el('span', { class: 'chip bad' }, `${i.overdueDays}d late`)) : null),
-        el('td', { class: 'right mono' }, cash(i.gross)),
-        el('td', { class: 'right mono' }, i.withheld ? `− ${cash(i.withheld)}` : '—'),
-        el('td', { class: 'right mono' },
+          i.overdueDays ? el('span', { class: 'chip bad', style: 'margin-left:.4rem' }, `${i.overdueDays}d late`) : null),
+        el('td', { class: 'right mono', dataset: { label: 'Total' } }, cash(i.gross)),
+        el('td', { class: 'right mono', dataset: { label: 'Withheld' } }, i.withheld ? `− ${cash(i.withheld)}` : '—'),
+        el('td', { class: 'right mono', dataset: { label: 'To collect' } },
           cash(i.dueNow ?? i.payable),
           i.depositCredit ? el('div', {}, el('small', {}, `after ${cash(i.depositCredit)} deposit`)) : null),
-        el('td', { class: 'right' }, i.status === 'issued'
-          ? el('div', { class: 'row', style: 'justify-content:flex-end' }, methodSel, payBtn)
+        el('td', { class: 'right', dataset: { label: '' } }, i.status === 'issued'
+          ? el('div', { class: 'row pay-row', style: 'justify-content:flex-end' }, methodSel, payBtn)
           : statusChip('paid')));
     }))));
   return wrap;

@@ -77,6 +77,22 @@ small { color: var(--muted); }
    as a logo rather than a badge stuck onto one. */
 .brand .mark { width: 32px; height: 32px; display: block; object-fit: contain; }
 .topbar nav { margin-left: auto; display: flex; gap: .35rem; align-items: center; flex-wrap: wrap; }
+
+/*
+ * Signed in as both a customer and a foxxer there are five links, which wrap
+ * into three ragged rows on a phone and push the brand out of the corner.
+ * Below the breakpoint the brand takes its own row and the links scroll.
+ */
+@media (max-width: 700px) {
+  .topbar { flex-wrap: wrap; gap: .5rem; }
+  .brand { flex: 1 0 100%; }
+  .topbar nav {
+    margin-left: 0; flex-wrap: nowrap; width: 100%;
+    overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  }
+  .topbar nav::-webkit-scrollbar { display: none; }
+  .topbar nav a { white-space: nowrap; }
+}
 .topbar nav a { padding: .4rem .7rem; border-radius: 8px; color: var(--muted); font-size: .92rem; font-weight: 500; }
 .topbar nav a:hover { background: var(--graphite); color: var(--off-white); text-decoration: none; }
 .topbar nav a.active { color: var(--amber); background: var(--graphite); }
@@ -165,6 +181,40 @@ th { text-align: left; font-size: .76rem; text-transform: uppercase; letter-spac
 td { padding: .55rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
 tr:last-child td { border-bottom: 0; }
 .table-wrap { overflow-x: auto; }
+
+/*
+ * A seven-column table does not survive a 390px screen. Below the breakpoint
+ * a table marked `.stacks` becomes one card per row, with each cell's own
+ * data-label as its heading. The alternative — a sideways scroll — hides the
+ * two things that matter most, the amount to collect and the button that
+ * collects it, off the right-hand edge.
+ */
+@media (max-width: 760px) {
+  .table-wrap:has(.stacks) { overflow-x: visible; }
+  table.stacks, table.stacks tbody, table.stacks tr, table.stacks td { display: block; width: 100%; }
+  table.stacks thead { display: none; }
+
+  table.stacks tr {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    box-shadow: var(--shadow-sm), var(--edge);
+    padding: .35rem .9rem .8rem; margin-bottom: .85rem;
+  }
+  table.stacks td {
+    border: 0; padding: .5rem 0; text-align: left !important;
+    display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+  }
+  table.stacks td + td { border-top: 1px solid var(--line); }
+  table.stacks td::before {
+    content: attr(data-label);
+    font-size: .74rem; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); font-weight: 600; flex: 0 0 auto;
+  }
+  /* The action row is the reason for the card: give it the full width. */
+  table.stacks td:last-child { display: block; }
+  table.stacks td:last-child::before { content: none; }
+  table.stacks .pay-row { justify-content: stretch !important; }
+  table.stacks .pay-row select { flex: 1 1 auto; }
+}
 
 /* ---- home ---- */
 
@@ -306,6 +356,16 @@ a.card.job-row, .job-row {
 /* Long headings break badly at large sizes — "Find a" alone on a line. */
 h1, h2 { text-wrap: balance; }
 
+/* Picking a rating. Big enough to hit with a thumb. */
+.rate { display: flex; gap: .2rem; }
+.rate .star {
+  background: none; border: 0; cursor: pointer; padding: .1rem .25rem;
+  font-size: 2rem; line-height: 1; color: var(--line);
+  transition: color .1s ease, transform .1s ease;
+}
+.rate .star.on { color: var(--amber); }
+.rate .star:hover { transform: translateY(-2px); }
+
 .stars { color: var(--amber); letter-spacing: .06em; }
 
 /* ---- slots ---- */
@@ -368,7 +428,13 @@ footer {
 .step.done { border-color: var(--good); color: var(--good); }
 .step.now { border-color: var(--amber); color: var(--amber); font-weight: 650; }
 
-.tabs { display: flex; gap: .3rem; overflow-x: auto; border-bottom: 1px solid var(--line); margin-bottom: 1.2rem; }
+.tabs {
+  display: flex; gap: .3rem; overflow-x: auto;
+  border-bottom: 1px solid var(--line); margin-bottom: 1.2rem;
+  scrollbar-width: none; scroll-snap-type: x proximity;
+}
+.tabs::-webkit-scrollbar { display: none; }
+.tabs a { scroll-snap-align: start; }
 .tabs a { padding: .55rem .85rem; color: var(--muted); font-size: .93rem; font-weight: 550; border-bottom: 2px solid transparent; white-space: nowrap; }
 .tabs a:hover { color: var(--off-white); text-decoration: none; }
 .tabs a.active { color: var(--amber); border-bottom-color: var(--amber); }

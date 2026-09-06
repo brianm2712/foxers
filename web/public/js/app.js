@@ -148,8 +148,13 @@ function renderNav(path) {
  * each view so that every screen in the console agrees on where it is.
  */
 function consoleTabs(path) {
-  return el('nav', { class: 'tabs' }, CONSOLE_TABS.map(([href, label]) =>
+  const nav = el('nav', { class: 'tabs' }, CONSOLE_TABS.map(([href, label]) =>
     el('a', { href, class: href === path ? 'active' : '' }, label)));
+  // On a phone the strip is wider than the screen, so the tab you are on can
+  // be off the edge with nothing to say so. Bring it into view.
+  queueMicrotask(() => nav.querySelector('a.active')
+    ?.scrollIntoView({ block: 'nearest', inline: 'center' }));
+  return nav;
 }
 
 /* ---- render ---------------------------------------------------------- */

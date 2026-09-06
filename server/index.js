@@ -223,6 +223,7 @@ function jobView(ref) {
     })),
     deposit: depositView(request),
     receipt: receiptView(store.find('receipts', (r) => r.ref === ref)),
+    review: reviewState(booking),
     customer: customer ? { name: customer.name, phone: customer.phone, address: customer.address } : null,
   };
 }
@@ -242,6 +243,21 @@ function depositView(request) {
     note: said[d.status] || null,
     settled: !!d.moved,
   };
+}
+
+/*
+ * Whether this customer can say how it went. A review is only possible on a
+ * job that was actually carried out, and only once — the same two conditions
+ * addReview enforces, surfaced so the page can offer the form rather than
+ * letting someone write one and be refused on submit.
+ */
+function reviewState(booking) {
+  if (!booking) return { can: false, left: null };
+  const existing = store.find('reviews', (r) => r.bookingId === booking.id);
+  if (existing) {
+    return { can: false, left: { rating: existing.rating, text: existing.text, at: existing.createdAt } };
+  }
+  return { can: ['done', 'invoiced', 'paid'].includes(booking.status), left: null };
 }
 
 function receiptView(r) {

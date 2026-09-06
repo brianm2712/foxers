@@ -620,3 +620,35 @@ test('the version is reported, and the API version is a separate number', async 
   const m = await api('GET', '/api/v1/meta', undefined, { token: null });
   assert.strictEqual(m.body.version, h.body.version, 'one source of truth');
 });
+
+test('a review can only be left on a job that happened, and only once', async () => {
+  const view = await api('GET', `/api/v1/jobs/${jobRef}?t=${encodeURIComponent(jobToken)}`, undefined, { token: null });
+  assert.strictEqual(view.body.review.can, false, 'not before the job is done');
+  assert.strictEqual(view.body.review.left, null);
+
+  const early = await api('POST', `/api/v1/jobs/${jobRef}/review?t=${encodeURIComponent(jobToken)}`,
+    { rating: 5, text: 'Too soon' }, { token: null });
+  assert.strictEqual(early.status, 400, 'and the server refuses it too');
+
+  const booking = (await api('GET', '/api/v1/pro/bookings')).body.bookings.find((b) => b.ref === jobRef);
+  await api('PATCH', `/api/v1/pro/bookings/${booking.id}`, { status: 'done' });
+
+  const now = await api('GET', `/api/v1/jobs/${jobRef}?t=${encodeURIComponent(jobToken)}`, undefined, { token: null });
+  assert.strictEqual(now.body.review.can, true, 'once it is done, it can be reviewed');
+
+  const left = await api('POST', `/api/v1/jobs/${jobRef}/review?t=${encodeURIComponent(jobToken)}`,
+    { rating: 5, text: 'Arrived when he said he would.' }, { token: null });
+  assert.strictEqual(left.status, 201, left.raw);
+
+  const after = await api('GET', `/api/v1/jobs/${jobRef}?t=${encodeURIComponent(jobToken)}`, undefined, { token: null });
+  assert.strictEqual(after.body.review.can, false, 'and not offered twice');
+  assert.strictEqual(after.body.review.left.rating, 5);
+
+  const again = await api('POST', `/api/v1/jobs/${jobRef}/review?t=${encodeURIComponent(jobToken)}`,
+    { rating: 1, text: 'Changed my mind' }, { token: null });
+  assert.strictEqual(again.status, 400, 'the server refuses a second one');
+
+  const page = await api('GET', `/api/v1/pros/${pro.slug}`, undefined, { token: null });
+  assert.ok(page.body.reviews.some((r) => r.text.startsWith('Arrived when')), 'and it shows on their page');
+  assert.ok(page.body.reviews.every((r) => r.verified), 'every review is attached to a real job');
+});

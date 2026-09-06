@@ -546,6 +546,9 @@ export async function job(mount, ctx) {
 
       data.receipt ? receiptCard(data.receipt) : invoice ? invoiceCard(invoice, region) : null,
 
+      data.review?.left ? leftReviewCard(data.review.left)
+        : data.review?.can ? reviewForm(ref, token, data.pro, () => { render(); }) : null,
+
       !quote && !invoice && data.request ? el('div', { class: 'card' },
         el('h3', {}, 'Waiting on a quote'),
         el('p', { class: 'muted', style: 'margin:0' },
@@ -691,6 +694,66 @@ function quoteCard(q, region, onAccept, onDecline) {
     q.acceptedAt ? el('p', { class: 'muted', style: 'margin:.6rem 0 0' },
       `Accepted ${dateTime(q.acceptedAt)}`,
       q.acceptedSlot ? `, booked for ${dateTime(q.acceptedSlot)}.` : '.') : null);
+}
+
+/*
+ * Saying how it went. Only offered on a job that was actually carried out and
+ * only once, which is what makes every review on Foxxers attached to real
+ * money changing hands — the thing that separates it from a review site.
+ */
+function reviewForm(ref, token, pro, onDone) {
+  let rating = 0;
+  const starWrap = el('div', { class: 'rate' });
+  const text = el('textarea', {
+    placeholder: 'What were they like? Turn up when they said? Tidy up after?',
+  });
+  const send = el('button', { class: 'btn primary', disabled: true }, 'Leave the review');
+  const card = el('div', { class: 'card' });
+
+  const paint = () => {
+    clear(starWrap);
+    for (let n = 1; n <= 5; n += 1) {
+      const b = el('button', {
+        type: 'button', class: `star${n <= rating ? ' on' : ''}`,
+        'aria-label': `${n} star${n === 1 ? '' : 's'}`,
+      }, n <= rating ? '★' : '☆');
+      b.addEventListener('click', () => { rating = n; send.disabled = false; paint(); });
+      starWrap.append(b);
+    }
+  };
+  paint();
+
+  send.addEventListener('click', async () => {
+    send.disabled = true;
+    send.textContent = 'Sending…';
+    try {
+      await jobs.review(ref, token, { rating, text: text.value });
+      onDone();
+    } catch (err) {
+      send.disabled = false;
+      send.textContent = 'Leave the review';
+      card.prepend(notice('err', err.message));
+    }
+  });
+
+  card.append(
+    el('h3', {}, `How did ${pro ? pro.business : 'it'} get on?`),
+    el('p', { class: 'muted', style: 'margin:.2rem 0 .8rem' },
+      'It goes on their public page. Only customers with a job that was actually done can leave one.'),
+    starWrap,
+    el('div', { style: 'margin-top:.8rem' }, text),
+    el('div', { class: 'row', style: 'margin-top:.8rem' }, send));
+  return card;
+}
+
+function leftReviewCard(r) {
+  return el('div', { class: 'card' },
+    el('div', { class: 'row between' },
+      el('h3', { style: 'margin:0' }, 'Your review'),
+      el('small', {}, dateOnly(r.at))),
+    el('div', { class: 'stars', style: 'font-size:1.15rem' },
+      '★'.repeat(r.rating) + '☆'.repeat(5 - r.rating)),
+    r.text ? el('p', { class: 'muted', style: 'margin:.5rem 0 0' }, r.text) : null);
 }
 
 function depositCard(d, region) {
