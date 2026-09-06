@@ -609,3 +609,14 @@ test('a job that was asked for and then booked appears once, not twice', async (
   assert.strictEqual(mine[0].at, when, 'and the hour that was agreed');
   assert.match(mine[0].description, /Shaver socket wanted/, 'while keeping what was asked for');
 });
+
+test('the version is reported, and the API version is a separate number', async () => {
+  // The footer shows the first; the second is the `v1` in every route and
+  // only moves when a client that worked yesterday would stop working.
+  const h = await api('GET', '/api/v1/health', undefined, { token: null });
+  assert.match(h.body.version, /^\d+\.\d+\.\d+$/);
+  assert.strictEqual(h.body.api, 1);
+
+  const m = await api('GET', '/api/v1/meta', undefined, { token: null });
+  assert.strictEqual(m.body.version, h.body.version, 'one source of truth');
+});

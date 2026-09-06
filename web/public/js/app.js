@@ -8,7 +8,7 @@
  * either side lands in the right place without a page load.
  */
 
-import { session, whoami, whoamiCustomer, logout, customerLogout } from './api.js';
+import { session, whoami, whoamiCustomer, logout, customerLogout, meta } from './api.js';
 import * as customer from './customer.js';
 import * as pro from './pro.js';
 import { el, clear, notice } from './ui.js';
@@ -204,7 +204,23 @@ async function render() {
  * should see the console nav immediately rather than watch it appear a
  * moment later, and a stale token should be cleared before any view uses it.
  */
+/*
+ * The version, in the footer. Read from the server rather than baked into the
+ * page, so a browser holding a cached shell still reports what it is actually
+ * talking to — which is the only number worth having when someone says "it is
+ * doing something odd".
+ */
+async function showVersion() {
+  const slot = document.getElementById('version');
+  if (!slot) return;
+  try {
+    const m = await meta();
+    if (m.version) slot.textContent = `v${m.version}`;
+  } catch { /* offline — better to show nothing than a stale number */ }
+}
+
 (async () => {
+  showVersion();
   await Promise.all([
     session.token ? whoami().catch(() => null) : null,
     session.customerToken ? whoamiCustomer().catch(() => null) : null,

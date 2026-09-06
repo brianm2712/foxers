@@ -7,6 +7,7 @@
   --amber: #FFB020;
   --amber-dim: #C88614;
   --muted: #9AA0A8;
+  --faint: #6B7280;
   --line: #3A3F47;
   --good: #4CC38A;
   --warn: #FFB020;
@@ -352,7 +353,15 @@ h1, h2 { text-wrap: balance; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .skeleton { background: linear-gradient(90deg, var(--graphite) 25%, var(--graphite-2) 50%, var(--graphite) 75%); background-size: 200% 100%; animation: sk 1.2s infinite; border-radius: 8px; height: 1em; }
 @keyframes sk { to { background-position: -200% 0; } }
-footer { border-top: 1px solid var(--line); padding: 1.4rem clamp(1rem,4vw,2rem); color: var(--muted); font-size: .85rem; text-align: center; }
+footer {
+  border-top: 1px solid var(--line); padding: 1.4rem clamp(1rem,4vw,2rem);
+  color: var(--muted); font-size: .85rem; text-align: center;
+  display: flex; flex-wrap: wrap; gap: .3rem .8rem;
+  align-items: baseline; justify-content: center;
+}
+/* Empty until the server answers, so it must not reserve a gap when it is. */
+.version:empty { display: none; }
+.version { font-family: var(--mono); font-size: .8rem; color: var(--faint); }
 
 .steps { display: flex; gap: .4rem; flex-wrap: wrap; margin-bottom: 1rem; }
 .step { flex: 1 1 90px; padding: .4rem .55rem; border-radius: 8px; background: var(--graphite); border: 1px solid var(--line); font-size: .78rem; text-align: center; color: var(--muted); }

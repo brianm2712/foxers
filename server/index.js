@@ -24,6 +24,7 @@ const { slotsFor, groupByDay, defaultAvailability, parseHm, DAYS } = require('./
 const { TRADES, AREAS, URGENCY, BY_KEY } = require('./lib/trades');
 const { vatClasses, withholdingRates } = require('./lib/tax');
 const pay = require('./lib/payments');
+const { VERSION, API_VERSION } = require('./version');
 
 const ROOT = path.resolve(__dirname, '..');
 const DATA_DIR = process.env.FOXERS_DATA || path.join(ROOT, 'data');
@@ -267,6 +268,7 @@ on('GET', '/api/v1/meta', async (req, res) => {
     urgency: URGENCY,
     vat: { IE: vatClasses('IE'), UK: vatClasses('UK') },
     withholding: { IE: withholdingRates('IE'), UK: withholdingRates('UK') },
+    version: VERSION,
     deposit: { IE: pay.depositAmount('IE'), UK: pay.depositAmount('UK') },
     paymentMethods: pay.METHODS,
     days: DAYS,
@@ -889,7 +891,12 @@ on('PUT', '/api/v1/pro/profile', async (req, res) => {
 });
 
 on('GET', '/api/v1/health', async (req, res) => {
-  H.json(res, 200, { ok: true, pros: store.all('pros').length, version: 1 });
+  H.json(res, 200, {
+    ok: true,
+    pros: store.all('pros').length,
+    version: VERSION,
+    api: API_VERSION,
+  });
 });
 
 /* ---- server ---------------------------------------------------------- */
