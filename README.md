@@ -9,6 +9,12 @@ console: requests to price, quotes waiting on a yes, the diary, and the money.
 
 Node standard library only. No npm, no build step, no outbound calls.
 
+![Foxers, end to end](docs/demo.gif)
+
+*A real run, not a mockup: a customer searches, signs in, opens a quote and picks one
+of three hours the electrician actually has free — accepting is the booking — and it is
+already in his diary when he opens it.*
+
 ---
 
 ## Why this can be a booking app at all
