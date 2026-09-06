@@ -652,3 +652,42 @@ test('a review can only be left on a job that happened, and only once', async ()
   assert.ok(page.body.reviews.some((r) => r.text.startsWith('Arrived when')), 'and it shows on their page');
   assert.ok(page.body.reviews.every((r) => r.verified), 'every review is attached to a real job');
 });
+
+test('a brand new foxxer is told what stands between them and being bookable', async () => {
+  const fresh = await api('POST', '/api/v1/auth/signup', {
+    name: 'Sean Fitzgerald', business: 'Fitzgerald Plumbing', email: 'sean@example.com',
+    password: 'a-long-enough-password', trades: ['plumber'], areas: ['cork'],
+  }, { token: null });
+  assert.strictEqual(fresh.status, 201, fresh.raw);
+  const t = fresh.body.token;
+
+  let d = (await api('GET', '/api/v1/pro/dashboard', undefined, { token: t })).body;
+  assert.strictEqual(d.setup.fresh, true, 'no work has ever come in');
+  assert.strictEqual(d.setup.bookable, 0, 'and nothing can be booked');
+  assert.strictEqual(d.setup.hoursConfirmed, false, 'the default week has not been looked at');
+
+  // A service with no price is not bookable, so it does not count.
+  await api('POST', '/api/v1/pro/services',
+    { name: 'Bathroom refit', minutes: 480, price: 0, bookable: false }, { token: t });
+  d = (await api('GET', '/api/v1/pro/dashboard', undefined, { token: t })).body;
+  assert.strictEqual(d.setup.services, 1);
+  assert.strictEqual(d.setup.bookable, 0, 'quote-only work does not make you bookable');
+
+  await api('POST', '/api/v1/pro/services',
+    { name: 'Annual boiler service', minutes: 60, price: 110, bookable: true }, { token: t });
+  const hours = (await api('GET', '/api/v1/pro/availability', undefined, { token: t })).body;
+  await api('PUT', '/api/v1/pro/availability', { weekly: hours.weekly }, { token: t });
+
+  d = (await api('GET', '/api/v1/pro/dashboard', undefined, { token: t })).body;
+  assert.strictEqual(d.setup.bookable, 1);
+  assert.strictEqual(d.setup.hoursConfirmed, true, 'saving the week counts as looking at it');
+  assert.strictEqual(d.setup.fresh, true, 'still no actual work');
+
+  // The guide is about having ever traded, not about being busy today: one
+  // quote is enough to retire it for good.
+  await api('POST', '/api/v1/pro/quotes', {
+    title: 'A job', lines: [{ kind: 'labour', description: 'Work', qty: 1, unitPrice: 80, vatClass: 'reduced' }],
+  }, { token: t });
+  d = (await api('GET', '/api/v1/pro/dashboard', undefined, { token: t })).body;
+  assert.strictEqual(d.setup.fresh, false, 'and now the money screen is the useful one');
+});

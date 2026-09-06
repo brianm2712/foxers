@@ -181,6 +181,21 @@ export async function dashboard(mount, ctx) {
   const stat = (k, v, tone) => el('div', { class: `stat ${tone || ''}` },
     el('div', { class: 'k' }, k), el('div', { class: 'v' }, v));
 
+  /*
+   * Someone who has never had a job does not need five zeroes and a chart of
+   * nothing. They need the short list of things between them and being
+   * bookable — and the first of those is the only one that actually matters,
+   * because a foxxer with no priced service cannot be booked at all.
+   */
+  if (d.setup?.fresh) {
+    return clear(mount).append(frag(
+      heading(`${greeting()}, ${d.pro.name.split(' ')[0]}`, d.pro.business),
+      setupGuide(d.setup),
+      el('div', { class: 'section-head' }, el('h2', {}, 'When work starts coming in')),
+      el('p', { class: 'muted' },
+        'This page becomes what is owed, what is overdue, who needs chasing and what is next out the door.')));
+  }
+
   clear(mount).append(frag(
     heading(`${greeting()}, ${d.pro.name.split(' ')[0]}`, d.pro.business),
 
@@ -208,6 +223,61 @@ export async function dashboard(mount, ctx) {
       : empty('Nothing booked yet.',
           el('a', { class: 'btn', href: '/dash/hours' }, 'Check your hours are right')),
   ));
+}
+
+/*
+ * The steps, in the order they matter. Nothing here is busywork: without a
+ * priced service nobody can book you, and without the tax details an invoice
+ * cannot be raised.
+ */
+function setupGuide(setup) {
+  const steps = [
+    {
+      done: setup.bookable > 0,
+      title: 'Price something you do',
+      body: setup.bookable > 0
+        ? `${setup.bookable} service${setup.bookable === 1 ? '' : 's'} customers can book outright.`
+        : 'A job with a fixed price and a known length is one people can book without ringing you. Until you have one, you can only be asked for quotes.',
+      href: '/dash/services', cta: 'Add a service',
+    },
+    {
+      done: setup.hoursConfirmed,
+      title: 'Check your week',
+      body: setup.hoursConfirmed
+        ? 'Your hours are set, and they decide every slot a customer is offered.'
+        : 'You are set to eight to five, Monday to Friday, with twelve hours notice. That decides every time slot anyone is offered, so it is worth a look.',
+      href: '/dash/hours', cta: 'Set your hours',
+    },
+    {
+      done: setup.taxReady,
+      title: 'Tax and invoice numbers',
+      body: setup.taxReady
+        ? 'Your VAT setting and invoice prefix are in.'
+        : 'Your VAT registration, RCT or CIS rate and invoice prefix. Invoices are numbered in sequence from it, so it is worth getting right before the first one.',
+      href: '/dash/profile', cta: 'Business details',
+    },
+    {
+      done: setup.published,
+      title: 'Be findable',
+      body: setup.published
+        ? 'Your page is live and appears in search.'
+        : 'Your page is hidden from search at the moment.',
+      href: `/pro/${setup.slug}`, cta: 'See your public page',
+    },
+  ];
+  const left = steps.filter((s) => !s.done).length;
+
+  return el('div', {},
+    el('div', { class: 'notice info' },
+      left
+        ? el('strong', {}, `${left} thing${left === 1 ? '' : 's'} to do before customers can find and book you.`)
+        : el('strong', {}, 'You are set up. Nothing to do but wait for the first job.')),
+    el('div', { class: 'setup-grid' }, steps.map((s) => el('div', { class: `card setup-step${s.done ? ' done' : ''}` },
+      el('div', { class: 'row between' },
+        el('h3', { style: 'margin:0' }, s.title),
+        s.done ? el('span', { class: 'chip good' }, 'done') : null),
+      el('p', { class: 'muted', style: 'margin:.5rem 0 .9rem' }, s.body),
+      el('a', { class: `btn sm ${s.done ? '' : 'primary'}`, href: s.href }, s.cta)))));
 }
 
 function actionCard(title, count, sub, href, cta) {

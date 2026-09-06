@@ -594,10 +594,35 @@ on('GET', '/api/v1/pro/dashboard', async (req, res) => {
     },
     upcoming: upcoming.slice(0, 10).map(bookingRow),
     chases: D.chasesDue(store, now).filter((c) => c.proId === pro.id).map(withCustomer),
+    setup: setupState(pro, bookings, invoices),
   });
 });
 
 function round2(n) { return Math.round((n + Number.EPSILON) * 100) / 100; }
+
+/*
+ * How far a new foxxer has got. Until they have had a single job the money
+ * screen is five zeroes and tells them nothing — what they need is the short
+ * list of things standing between them and being bookable.
+ *
+ * `fresh` is deliberately about having *ever* had work, not about having work
+ * today: a quiet week should not put the setup guide back in front of someone
+ * who has been trading for a year.
+ */
+function setupState(pro, bookings, invoices) {
+  const services = store.filter('services', (s) => s.proId === pro.id && s.active);
+  const av = store.find('availability', (a) => a.proId === pro.id);
+  const quotes = store.filter('quotes', (q) => q.proId === pro.id);
+  return {
+    fresh: !bookings.length && !invoices.length && !quotes.length,
+    services: services.length,
+    bookable: services.filter((s) => s.bookable && s.price > 0).length,
+    hoursConfirmed: !!(av && av.confirmedAt),
+    taxReady: !!(pro.vatRegistered ? pro.vatNumber : true) && !!pro.invoicePrefix,
+    published: !!pro.published,
+    slug: pro.slug,
+  };
+}
 
 function bookingRow(b) {
   const c = store.get('customers', b.customerId);
@@ -727,7 +752,9 @@ on('PUT', '/api/v1/pro/availability', async (req, res) => {
       weekly[day].push({ start: w.start, end: w.end });
     }
   }
-  const patch = { weekly };
+  // Stamped so the setup guide can tell "never looked at it" from "looked at
+  // it and the default week was right".
+  const patch = { weekly, confirmedAt: new Date().toISOString() };
   for (const k of ['leadTimeHours', 'bufferMinutes', 'maxDaysAhead', 'slotStepMinutes']) {
     if (body[k] != null) patch[k] = Math.max(0, Number(body[k]) || 0);
   }

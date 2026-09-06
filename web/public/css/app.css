@@ -398,6 +398,25 @@ h1, h2 { text-wrap: balance; }
 .stat.bad .v { color: #ff9b9e; }
 .stat.good .v { color: var(--good); }
 
+/*
+ * Two columns at most: four across turns each step into a narrow strip of
+ * wrapped text. The cards stretch to a common height and the button sits on
+ * the bottom edge of each, so the row of actions reads as a row.
+ */
+.setup-grid {
+  display: grid; gap: .85rem;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  max-width: 900px;
+}
+.setup-step { display: flex; flex-direction: column; }
+.setup-step p { flex: 1 1 auto; }
+.setup-step .btn { align-self: flex-start; }
+
+/* A step already done recedes rather than disappearing, so the list keeps its
+   shape and you can see how far along you are. */
+.setup-step.done { opacity: .62; }
+.setup-step.done:hover { opacity: 1; }
+
 /* ---- misc ---- */
 .notice { padding: .75rem .9rem; border-radius: 10px; border: 1px solid; margin-bottom: 1rem; font-size: .93rem; }
 .notice.err { background: rgba(229,72,77,.1); border-color: rgba(229,72,77,.45); color: #ffb3b5; }
