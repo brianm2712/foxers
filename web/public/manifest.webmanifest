@@ -1,0 +1,20 @@
+{
+  "name": "Foxers — trades booking",
+  "short_name": "Foxers",
+  "description": "Find a tradesperson, book a slot, agree a quote, get the invoice.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#1C1E21",
+  "theme_color": "#1C1E21",
+  "icons": [
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icons/icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Find a tradesperson", "url": "/find" },
+    { "name": "My work", "url": "/pro" }
+  ]
+}

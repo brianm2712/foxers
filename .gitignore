@@ -1,0 +1,13 @@
+# The live database. Holds customer and pro password hashes, session tokens
+# and every job on the system — it is state, not source, and must never be
+# committed.
+data/
+
+# Generated at first run and signs every session and job token. Leaking it
+# would let anyone mint a valid token for any account.
+*.session-key
+
+node_modules/
+npm-debug.log*
+.DS_Store
+*.swp
