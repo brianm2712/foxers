@@ -21,15 +21,21 @@
  * change to it is visible rather than retroactive.
  */
 
-const VERSION = '2026-09-06';
+const VERSION = '2026-09-07';
 
 const TITLE = 'Foxxers platform agreement';
 
 /*
  * `feeDescription` comes from the payment provider — the same source the
  * deduction itself uses. See `platformFee` in providers/stripe.js.
+ *
+ * It is a COMPLETE phrase and the sentence around it adds nothing: describeFee
+ * already ends "taken through the app", and the sentence used to end the same
+ * way, so the agreement read "2% of each payment taken through the app taken
+ * through the app". The fallback below says the whole thing for the same
+ * reason.
  */
-function body({ feeDescription = '2% of each payment' } = {}) {
+function body({ feeDescription = '2% of each payment taken through the app' } = {}) {
   return `
 # ${TITLE}
 
@@ -51,9 +57,9 @@ schedule, under its own agreement with you.
 
 ## 2. What it costs you
 
-Foxxers charges **${feeDescription}** taken through the app. It is deducted at
-the moment the payment is taken, before the money reaches you, and it is shown
-on the payment in your console.
+Foxxers charges **${feeDescription}**. It is deducted at the moment the payment
+is taken, before the money reaches you, and it is shown on the payment in your
+console.
 
 Stripe charges you its own processing fee on top of that, under your agreement
 with Stripe. Foxxers does not set it, does not receive it, and cannot waive it.

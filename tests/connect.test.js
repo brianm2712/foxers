@@ -325,6 +325,17 @@ test('the agreement says what it costs and who carries a dispute', async () => {
   assert.match(r.body.body, /2%/, 'the fee is in the agreement, not only in the UI');
   assert.match(r.body.body, /dispute|chargeback/i, 'and so is who carries a dispute');
   assert.strictEqual(r.body.accepted, null, 'not accepted yet');
+
+  /*
+   * The fee sentence is built from two pieces — the provider's description of
+   * the fee, and the sentence around it — and both once ended in the same
+   * words, so it read "2% of each payment taken through the app taken through
+   * the app". Nobody reads their own boilerplate twice; a test does.
+   */
+  assert.ok(!/taken through the app taken through the app/.test(r.body.body),
+    'the fee sentence does not repeat itself');
+  assert.match(r.body.body, /charges \*\*2% of each payment taken through the app\*\*\./,
+    'it states the fee once, and stops');
 });
 
 test('accepting the agreement is recorded against the version that was shown', async () => {
