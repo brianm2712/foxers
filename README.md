@@ -60,7 +60,8 @@ The foxxer sign-in page lists the demo logins, but only when the hostname is loc
 ### Tests
 
 ```sh
-node tests/api.test.js       # 40 — end-to-end over real HTTP
+node tests/api.test.js       # 42 — end-to-end over real HTTP
+node tests/connect.test.js   # 21 — Stripe Connect onboarding and invoice payment
 node tests/revolut.test.js   #  8 — the Revolut adapter against a strict mock
 node tests/webhook.test.js   #  5 — webhook signatures, on a real server
 node tests/schedule.test.js  #  7 — slot generation, DST, busy-time subtraction
@@ -101,7 +102,7 @@ server/index.js         one HTTP server, one router, every route
 server/lib/domain.js    the business operations — everything that changes state
 server/lib/tax.js       IE and UK construction tax. Rates are data, not literals
 server/lib/payments.js  deposits, taking money, and the provider seam
-server/lib/providers/   payment rails. revolut.js is the only outbound code
+server/lib/providers/   payment rails — the only code here that talks to the internet
 server/lib/schedule.js  availability → bookable slots, DST-correct
 server/lib/trades.js    the trade taxonomy: what is bookable, what can only be quoted
 server/lib/store.js     append-and-flush JSON store
@@ -118,7 +119,7 @@ scripts/seed.js         demo data — a marketplace worth looking at
 scripts/foxxers          start it if it is not running, then open it
 scripts/install-desktop.sh  applications-menu and desktop launcher, with the icon
 scripts/make-icons.py   app icons from the artwork (dev only, needs Pillow)
-tests/                  five suites, 69 assertions
+tests/                  six suites, 92 assertions
 ```
 
 `data/` is gitignored. It holds every password hash and the key that signs every
@@ -140,15 +141,18 @@ which is the thing a WhatsApp voice note never produces.
 
 ### Asking, in full
 
-1. **The customer sends a request, and €5 is taken.** Not to accept — to ask.
+1. **The customer sends a request, and €5 is HELD on their card.** Not taken — held, and
+   not to accept but to ask.
 2. **The foxxer prices it and offers up to three genuinely free hours**, checked against
    their real availability at the moment of sending.
 3. **The customer accepts one of those hours.** Accepting *is* the booking: it lands in
    the diary at that instant, and that hour immediately stops being offerable to anyone
    else. A price agreed without a date is the failure this app exists to prevent.
-   - **Declined instead?** The foxxer keeps the €5, for pricing a job that went nowhere.
-   - **Accepted?** The €5 is credited against the invoice, so it costs a genuine
-     customer nothing at all.
+   - **Declined instead?** The hold is captured and transferred to the foxxer, for
+     pricing a job that went nowhere.
+   - **Accepted?** The hold is cancelled. Nothing is ever charged, the invoice is for
+     the quoted price with no €5 line on it, and a genuine customer pays no fee for the
+     privilege of having asked.
 4. **The job is done, and the balance is taken at the door** — card reader, Apple or
    Google Pay, Revolut, transfer or cash.
 5. **The receipt is issued in the same request as the payment**, because they are one
@@ -172,9 +176,11 @@ Three things that are easy to get backwards, and are tested because of it:
 
 - **VAT is computed per line at that line's own rate**, on the net.
 - **Withholding is computed on the net, never on the VAT.**
-- **A credited deposit is money on account, not a discount.** VAT is charged on the full
-  price; the €5 only reduces what is left to collect. Treating it as a discount would
-  understate the VAT on every job that began as a request.
+- **A deposit is never a discount.** On the current rule the €5 is released rather than
+  charged, so the invoice is for the full price and there is nothing to credit. Deposits
+  taken under the older charge-then-credit rule still settle as money on account: VAT is
+  charged on the full price and the €5 only reduces what is left to collect. Treating it
+  as a discount either way would understate the VAT on every job that began as a request.
 
 Invoice numbers are sequential per foxxer with no gaps, and the counter advances at issue
 and never at draft — a number derived from a timestamp is not a sequence, and neither is
@@ -195,7 +201,7 @@ someone they will meet again.
 
 ## Payments
 
-`server/lib/payments.js` defines the contract; a provider is four methods. Two exist.
+`server/lib/payments.js` defines the contract; a provider is four methods. Three exist.
 
 **`manual` is the default.** It records what *would* have happened and sets
 `moved: false`, and the UI says so plainly on the deposit card and on the receipt. No
@@ -234,7 +240,9 @@ invoice and pocketed by the foxxer:
 ```
 pending → held       the customer actually paid
         → failed     they did not
-held    → credited   quote accepted; comes off the invoice
+held    → released   quote accepted; the hold is cancelled, nothing is charged
+held    → credited   the older rule: the €5 was taken and comes off the invoice
+held    → expired    nobody answered inside the week a card hold lasts
         → captured   quote declined; the foxxer keeps it
         → refunded   nobody quoted, so nobody earned it
 ```
@@ -243,9 +251,87 @@ Money crosses to Revolut in **integer minor units** — €5.00 goes over the wi
 and every crossing goes through `toMinor`/`fromMinor`. Getting that wrong by a factor of
 a hundred is the quiet way to lose a lot of money.
 
-Adding another rail (**SumUp** for the RFID reader, **Stripe** for Apple Pay and
-Terminal) is one more file in `server/lib/providers/` with the same four methods.
-Nothing above `payments.js` changes.
+Adding another rail (**SumUp** for the RFID reader) is one more file in
+`server/lib/providers/` with the same four methods. Nothing above `payments.js`
+changes.
+
+### `stripe` — the marketplace rail, and where customer money is meant to go
+
+Revolut is single-merchant: every customer payment lands in one account, which for a
+marketplace means the platform holding money it owes to tradespeople — in the EU,
+regulated activity under PSD2. **Stripe Connect** gives each foxxer their own account,
+so funds settle to them and the platform takes a stated fee without ever holding
+anything. `docs/stripe-connect-plan.md` has the full scope.
+
+**Phases 1 and 2 are built.** A foxxer gets a connected account and the app learns
+whether they can be paid; an invoice can then be taken by card as a destination charge.
+
+Connected accounts use the **Accounts v2 API** (`/v2/core/accounts`), not the legacy
+`type: 'express'` shorthand. Instead of an opaque account type, the responsibilities are
+stated: the platform collects fees and carries losses, the foxxer gets an Express-style
+Stripe dashboard, and two configurations are requested — `merchant` so an invoice can be
+charged to them, `recipient` so a captured deposit can be transferred to them. v2 speaks
+JSON where v1 speaks form encoding, and returns `null` for anything not named in
+`include`; `stripe.js` handles both and always asks.
+
+```sh
+FOXXERS_PAYMENTS=stripe
+FOXXERS_STRIPE_SECRET_KEY=sk_test_...       # sk_live_ switches it to live, nothing else to set
+FOXXERS_STRIPE_WEBHOOK_SECRET=whsec_...     # signing secret for the webhook
+FOXXERS_PUBLIC_URL=https://foxxers.com      # where Stripe returns them to
+FOXXERS_PLATFORM_FEE_BPS=200                # the platform's cut, 2% by default
+FOXXERS_PLATFORM_FEE_CENTS=0
+FOXXERS_HOLD_DAYS=7                         # how long a deposit hold lives before the
+                                            # request expires with it
+```
+
+Point the Stripe webhook at `POST /api/v1/webhooks/stripe`.
+
+**Which events actually arrive is not what the v2 documentation suggests.** A v2 account
+emits thin `v2.core.account[…]` events, but those go to a separately configured event
+destination — a classic webhook endpoint receives the **v1 connect events**
+(`account.updated`, `capability.updated`, `person.*`) even for a v2 account. This was
+found by pointing the Stripe CLI at a running server and reading what turned up. The
+handler takes both families and treats them identically: neither is parsed for state, it
+just re-reads the account, so there is no payload to trust and no second code path.
+
+### Taking an invoice
+
+**A card payment is a link, not a form.** The foxxer picks *Card payment link*, the app
+creates a Stripe-hosted Checkout Session as a **destination charge** to their connected
+account, and hands back a link to send. Nothing on a Foxxers page loads from Stripe.
+
+**The invoice stays owed until Stripe says otherwise.** No receipt is written when the
+link is created — a receipt is proof of payment, and issuing one for money that has not
+arrived is the one lie this app cannot tell. `checkout.session.completed` marks it paid
+and issues the receipt, and is idempotent because webhooks are redelivered.
+
+**Cash and bank transfer never touch Stripe.** They moved outside the app, so they are
+recorded, not charged; routing them to a card rail would invent a fee and a charge that
+never happened. A rail declares what it can take (`handles` on the provider) and
+everything else falls back to recording.
+
+**The amount charged is what is payable**, which on an RCT job is net + VAT *less* the
+20% withheld at source. Billing the pre-withholding figure would overcharge the customer
+by exactly what somebody else remits to Revenue on their behalf.
+
+**Being able to take a card is not the same as being able to receive it.** A destination
+charge needs both the `merchant` card-payments capability and the `recipient` transfers
+one; real Stripe refuses with `insufficient_capabilities_for_transfer` when the second is
+missing, so the app checks both before offering to take anything.
+
+**A foxxer who has not onboarded is not hidden and not blocked.** They appear in search,
+take requests and quote like anyone else — they simply cannot be paid *through the app*
+yet, and the Business tab says so in amber rather than red. Putting ID and a bank
+account between signing up and getting any value is how a marketplace never reaches its
+first hundred trades. Cash, transfer and their own card reader are unaffected.
+
+> **Onboarding has been run against real Stripe; the money paths have not.** A real
+> connected account was created through the app in a sandbox, a real hosted-onboarding
+> link opened, real requirements were parsed, and a real connect event was received and
+> acted on. Nothing in Phases 2–4 — charging an invoice, holding or capturing a deposit —
+> has been exercised against Stripe at all. The API version is pinned in `stripe.js` and
+> is not optional: the v2 endpoints reject older versions outright.
 
 ---
 
@@ -324,6 +410,10 @@ each screen on each platform is built from these routes.
 | `GET /api/v1/pro/deposits` | Earned from declined quotes, credited to jobs that went ahead |
 | `GET /api/v1/pro/chases`, `POST /api/v1/pro/chases/:invoiceId` | |
 | `PUT /api/v1/pro/profile` | |
+| `GET /api/v1/pro/payouts` | Whether Stripe can pay them yet, and what it is still waiting on |
+| `POST /api/v1/pro/payouts/onboard` | A Stripe onboarding link. Creates the account the first time, never twice. Refused until the agreement is accepted |
+| `GET /api/v1/pro/agreement` | The platform agreement, its version, and whether they have accepted it |
+| `POST /api/v1/pro/agreement/accept` | Accept it, against the version that was shown |
 
 ---
 
@@ -348,8 +438,19 @@ each screen on each platform is built from these routes.
 
 - **The iOS and iPadOS clients.** `ios/` is empty. The API above is the contract they are
   meant to be built against, and `web/public/js/api.js` is the file to mirror.
-- **A verified payment provider.** The Revolut adapter has never spoken to Revolut; it
-  needs a sandbox key and a run against the real API before it sees a card.
+- **A verified payment path.** Stripe onboarding has had a real round trip; no charge,
+  deposit, capture or transfer has. They are exercised only against a mock that refuses
+  what the real one refuses, which is not the same thing — run `scripts/stripe-check.js`
+  against a test key to change that. The Revolut adapter has never spoken to Revolut.
+- **Stripe Connect phase 4, going live.** Onboarding, invoice payments, deposits, the
+  platform agreement and fee disclosure are built. What is left needs the Stripe
+  dashboard and a test key: the platform profile and branding, and a test-mode run of
+  every money path — `scripts/stripe-check.js` runs that check and refuses a live key.
+  Step by step in `docs/go-live.md`; the five decisions that shaped the rest are in
+  `docs/stripe-connect-plan.md`.
+- **A reviewed platform agreement.** `server/lib/agreement.js` states plainly what the
+  code does with a foxxer's money and is wired into onboarding, but it has not been near
+  a solicitor. Do not let a real tradesperson accept it as it stands.
 - **Photos on a request.** The field exists and is always empty.
 - **Refunding a deposit on a request nobody ever quoted.** The state and the transition
   exist; nothing schedules it.

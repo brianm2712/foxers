@@ -23,23 +23,55 @@
  *              A quote that is accepted cancels the authorisation instead, so
  *              on the happy path no money moves and nobody pays a fee.
  *
- * Stripe speaks FORM ENCODING, not JSON, and nests with square brackets.
+ * TWO APIS, TWO ENCODINGS
+ *
+ * Connected accounts are Accounts v2 (`/v2/core/accounts`), which is Stripe's
+ * supported path — the v1 `type: 'express'` shorthand is legacy. v2 takes
+ * JSON; v1 takes form encoding nested with square brackets. Account links
+ * stayed on v1, so this file speaks both, and `call` picks by path.
+ *
+ * v2 also returns null for anything not named in `include`, which reads
+ * exactly like "this account has no capabilities" if you forget it.
+ *
  * Amounts are integer minor units.
  *
- * NOT YET RUN AGAINST STRIPE. Written to the documented API and exercised
- * against a mock that refuses what the real one refuses. It needs a test-mode
- * key and a real round trip before it sees a card.
+ * HOW MUCH OF THIS HAS MET REAL STRIPE
+ *
+ * Account creation, the onboarding link, the account read and a real connect
+ * webhook have all been round-tripped against a test sandbox — that is what
+ * moved this file to Accounts v2 and taught the webhook handler to take both
+ * event families.
+ *
+ * The MONEY paths are partly there. Deposit holds have been authorised for
+ * real, through hosted checkout, and a capture has been sent and accepted.
+ * A destination charge, a transfer and a cancel have NOT yet completed against
+ * Stripe — the account they route to is not onboarded, and the runs that
+ * reached them died on the two bugs recorded in docs/stripe-connect-plan.md.
+ * Treat those three as unproven until `scripts/stripe-check.js` says the run
+ * is complete.
  */
 
 const crypto = require('crypto');
 
 const API = 'https://api.stripe.com';
-/* Pinned: Stripe dates its API and old versions keep working. Bump on purpose. */
-const API_VERSION = '2024-06-20';
+/* Pinned: Stripe dates its API and old versions keep working. Bump on purpose.
+ * This one is not optional — the v2 endpoints reject older versions outright
+ * rather than falling back. */
+const API_VERSION = '2026-04-22.dahlia';
 const TIMEOUT_MS = 15_000;
+/* 2% — the decided platform fee. See docs/stripe-connect-plan.md, decision 1. */
+const DEFAULT_FEE_BPS = 200;
 
 const toMinor = (amount) => Math.round(Number(amount) * 100);
 const fromMinor = (minor) => Math.round(Number(minor)) / 100;
+
+/*
+ * Capturing, cancelling and refunding all act on the PaymentIntent, but what
+ * is stored against a payment is the checkout SESSION id — that is what the
+ * session-completed event names. The intent is recorded alongside it; falling
+ * back to `providerRef` keeps payments taken before that was true working.
+ */
+const intentOf = (payment) => payment.paymentIntentRef || payment.providerRef;
 
 /* Stripe's flavour of form encoding: nested[keys][like]=this, arrays by index. */
 function form(data, prefix = '', out = []) {
@@ -64,21 +96,48 @@ class StripeError extends Error {
   }
 }
 
-function create({ secretKey, base, publicUrl, feeBps = 0, feeFlat = 0 } = {}) {
+/*
+ * The fee in the words it has to be disclosed in. "200 basis points" is not a
+ * disclosure to a sole trader pricing a job on the back of a van, and the
+ * agreement and the console must not paraphrase it differently — so both read
+ * this, and it is derived from the same numbers the deduction uses.
+ */
+function describeFee(bps, cents) {
+  const pct = `${Number((bps / 100).toFixed(2))}%`;
+  if (!bps && !cents) return 'no platform fee';
+  if (!cents) return `${pct} of each payment taken through the app`;
+  if (!bps) return `${cents}c on each payment taken through the app`;
+  return `${pct} plus ${cents}c on each payment taken through the app`;
+}
+
+/* An unset variable and one set to the empty string mean the same thing here:
+ * nobody said. Reading `''` as zero would silently waive the platform fee. */
+function envNumber(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function create({ secretKey, base, publicUrl, feeBps = DEFAULT_FEE_BPS, feeFlat = 0 } = {}) {
   const key = secretKey || process.env.FOXXERS_STRIPE_SECRET_KEY;
   const root = (base || process.env.FOXXERS_STRIPE_BASE || API).replace(/\/+$/, '');
   const site = (publicUrl || process.env.FOXXERS_PUBLIC_URL || '').replace(/\/+$/, '');
-  /* The platform's cut, in basis points and cents. Zero unless configured, so
-   * an instance that has not decided on a fee does not silently take one. */
-  const bps = Number(process.env.FOXXERS_PLATFORM_FEE_BPS ?? feeBps) || 0;
-  const flat = Number(process.env.FOXXERS_PLATFORM_FEE_CENTS ?? feeFlat) || 0;
+  /* The platform's cut, in basis points and cents. 2% by decision, overridable
+   * per instance; see docs/stripe-connect-plan.md. Stripe's own ~1.5% + €0.25
+   * comes off the foxxer's side separately, so this is not the whole of what
+   * they lose — worth remembering before it is raised. */
+  const bps = envNumber('FOXXERS_PLATFORM_FEE_BPS', feeBps);
+  const flat = envNumber('FOXXERS_PLATFORM_FEE_CENTS', feeFlat);
   if (!key) throw new Error('Stripe needs FOXXERS_STRIPE_SECRET_KEY');
 
   async function call(method, path, data, { idempotencyKey, onBehalfOf } = {}) {
+    // The encoding follows the API, not the caller: v2 is JSON, v1 is form.
+    const isV2 = path.startsWith('/v2/');
     const headers = {
       authorization: `Bearer ${key}`,
       'stripe-version': API_VERSION,
-      'content-type': 'application/x-www-form-urlencoded',
+      'content-type': isV2 ? 'application/json' : 'application/x-www-form-urlencoded',
     };
     if (idempotencyKey) headers['idempotency-key'] = idempotencyKey;
     // Acting as a connected account, for the calls that must be made as them.
@@ -88,7 +147,7 @@ function create({ secretKey, base, publicUrl, feeBps = 0, feeFlat = 0 } = {}) {
     try {
       res = await fetch(root + path, {
         method, headers,
-        body: data === undefined ? undefined : form(data),
+        body: data === undefined ? undefined : (isV2 ? JSON.stringify(data) : form(data)),
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
     } catch (err) {
@@ -108,36 +167,88 @@ function create({ secretKey, base, publicUrl, feeBps = 0, feeFlat = 0 } = {}) {
   const platformFee = (amount) => Math.max(0, Math.round(toMinor(amount) * bps / 10_000) + flat);
 
   /*
-   * A PaymentIntent is what the app's SDK completes. The client secret is
-   * what makes it seamless — Apple Pay and Google Pay are one tap on it, and
-   * the customer never leaves the app.
+   * Close a checkout the customer never completed. Expiring is what releases a
+   * Checkout-created hold that has no capturable intent behind it — and, just
+   * as importantly, it stops them completing it later against a request that
+   * has already been closed here.
    */
-  async function intent({ amount, currency, captureMode, reference, destination, description }) {
-    const body = {
-      amount: toMinor(amount),
-      currency: String(currency).toLowerCase(),
-      capture_method: captureMode,
-      description,
-      automatic_payment_methods: { enabled: true },
-      metadata: { foxxers_ref: reference || '' },
-    };
-    // Destination charge: the money is routed to the foxxer as it is taken.
-    if (destination) {
-      body.transfer_data = { destination };
-      body.on_behalf_of = destination;
-      const fee = platformFee(amount);
-      if (fee > 0) body.application_fee_amount = fee;
-    }
-    const pi = await call('POST', '/v1/payment_intents', body,
-      { idempotencyKey: reference ? `pi_${reference}` : undefined });
+  async function expireSession(payment) {
+    const cs = await call('POST',
+      `/v1/checkout/sessions/${encodeURIComponent(payment.providerRef)}/expire`,
+      {}, { idempotencyKey: `ex_${payment.id}` });
+    return { ref: cs.id, moved: false };
+  }
+
+  /*
+   * A Stripe-HOSTED checkout page, not a card form on our own pages. That is
+   * the decision the footer forces: seamless in-app entry means loading
+   * js.stripe.com, which is a third-party request that also fingerprints. One
+   * redirect out costs a little polish and keeps the promise.
+   *
+   * Both kinds of money go through here. `captureMode: 'manual'` is what makes
+   * a deposit an authorisation rather than a charge — the customer completes
+   * the same page, and the money is held instead of taken.
+   */
+  async function session({
+    amount, currency, reference, destination, ref, name, description, captureMode, key,
+  }) {
+    const fee = destination ? platformFee(amount) : 0;
+    const back = site && ref ? `${site}/j/${encodeURIComponent(ref)}` : undefined;
+    const cs = await call('POST', '/v1/checkout/sessions', {
+      mode: 'payment',
+      line_items: [{
+        quantity: 1,
+        price_data: {
+          currency: String(currency).toLowerCase(),
+          unit_amount: toMinor(amount),
+          product_data: { name },
+        },
+      }],
+      payment_intent_data: {
+        description,
+        ...(captureMode ? { capture_method: captureMode } : {}),
+        /*
+         * The same reference on the INTENT as on the session. Load-bearing:
+         * a session has no PaymentIntent when it is created — real Stripe
+         * returns null, whatever a mock may say — so a `payment_intent.*`
+         * event cannot be matched by an id we never received. It carries its
+         * own reference instead, and can be matched on arrival whatever order
+         * the events turn up in.
+         */
+        metadata: { foxxers_ref: ref || '', foxxers_payment: reference || '' },
+        // A destination charge routes the money to the foxxer as it is taken.
+        // A deposit has none: an open request has no foxxer yet.
+        ...(destination ? { transfer_data: { destination }, on_behalf_of: destination } : {}),
+        ...(fee > 0 ? { application_fee_amount: fee } : {}),
+      },
+      client_reference_id: ref || undefined,
+      success_url: back && `${back}?paid=1`,
+      cancel_url: back,
+      // How the webhook finds the payment this session belongs to. The session
+      // id is not known to us until after it is created.
+      metadata: { foxxers_ref: ref || '', foxxers_payment: reference || '' },
+      /*
+       * Keyed on something GLOBALLY unique, which an invoice number is not:
+       * it is `<initials>-<year>-<seq>`, and the initials come from the
+       * business name, so "Byrne Electrical" and "Best Electrics" both issue
+       * BE-2026-0001. Sharing a key across two foxxers' invoices earns
+       * Stripe's "same key, different parameters" refusal, and the second
+       * customer to pay simply cannot, for a reason nobody could act on.
+       */
+    }, { idempotencyKey: key ? `cs_${key}` : undefined });
+
     return {
-      ref: pi.id,
-      clientSecret: pi.client_secret,
-      checkoutUrl: site && reference ? `${site}/j/${encodeURIComponent(reference)}` : null,
+      ref: cs.id,
+      // Kept because a hold is settled and captured by PaymentIntent id: the
+      // events that say money is held name the intent, never the session.
+      paymentIntent: cs.payment_intent || null,
+      checkoutUrl: cs.url,
+      // Nobody has paid anything yet. A customer arriving back on the success
+      // page is not evidence; only the webhook is.
       state: 'pending',
-      amount: fromMinor(pi.amount),
-      currency: (pi.currency || currency).toUpperCase(),
+      amount, currency: String(currency).toUpperCase(),
       destination: destination || null,
+      fee,
       moved: false,
     };
   }
@@ -145,18 +256,27 @@ function create({ secretKey, base, publicUrl, feeBps = 0, feeFlat = 0 } = {}) {
   return {
     key: 'stripe',
 
+    /* What this instance deducts, for disclosing it in the same terms it is
+     * charged in. Read by the agreement and by the foxxer's payouts card. */
+    fee: () => ({ bps, cents: flat, description: describeFee(bps, flat) }),
+
     /*
      * The deposit. Authorised on the platform because an open request has no
-     * foxxer yet; captured only if a quote is declined.
+     * foxxer yet; captured only if a quote is declined, and cancelled outright
+     * if it is accepted — so on the happy path no money moves and nobody pays
+     * a fee for it.
      */
-    hold: ({ amount, currency, reference }) => intent({
-      amount, currency, captureMode: 'manual', reference,
+    hold: ({ amount, currency, reference, ref, key }) => session({
+      amount, currency, reference, ref, captureMode: 'manual',
+      // The job reference: minted fresh per request and never reused.
+      key: key || ref || reference,
+      name: 'Foxxers request deposit',
       description: 'Foxxers deposit — released if you go ahead with the quote',
     }),
 
     /* The quote was declined. Take the hold, then pass it to the foxxer. */
     async capture({ payment, destination }) {
-      const pi = await call('POST', `/v1/payment_intents/${encodeURIComponent(payment.providerRef)}/capture`,
+      const pi = await call('POST', `/v1/payment_intents/${encodeURIComponent(intentOf(payment))}/capture`,
         {}, { idempotencyKey: `cap_${payment.id}` });
 
       let transfer = null;
@@ -181,20 +301,64 @@ function create({ secretKey, base, publicUrl, feeBps = 0, feeFlat = 0 } = {}) {
     async refund({ payment }) {
       if (payment.status === 'captured') {
         const r = await call('POST', '/v1/refunds',
-          { payment_intent: payment.providerRef, amount: toMinor(payment.amount) },
+          { payment_intent: intentOf(payment), amount: toMinor(payment.amount) },
           { idempotencyKey: `rf_${payment.id}` });
         return { ref: r.id, moved: true };
       }
-      const pi = await call('POST', `/v1/payment_intents/${encodeURIComponent(payment.providerRef)}/cancel`,
-        {}, { idempotencyKey: `cn_${payment.id}` });
-      return { ref: pi.id, moved: true };
+
+      /*
+       * A hold nobody finished paying has no intent to cancel, and Stripe
+       * refuses to be asked: "You cannot perform this action on PaymentIntents
+       * created by Checkout. Try expiring the Checkout Session instead."
+       *
+       * This is not a corner case. A customer who opens a request and closes
+       * the tab leaves a deposit at `pending`, and the seven-day sweep releases
+       * it. Cancelling would fail, the session would stay open, and they could
+       * still complete it afterwards — a hold on their card for a request that
+       * closed a week ago.
+       */
+      if (payment.status === 'pending' || !intentOf(payment)) return expireSession(payment);
+
+      let pi;
+      try {
+        pi = await call('POST', `/v1/payment_intents/${encodeURIComponent(intentOf(payment))}/cancel`,
+          {}, { idempotencyKey: `cn_${payment.id}` });
+      } catch (err) {
+        // The app can believe a deposit is held — a webhook said so — while
+        // Stripe still considers the session open. Do the thing that works.
+        if (/created by Checkout/i.test(err.message)) return expireSession(payment);
+        throw err;
+      }
+      // Cancelling a hold moves nothing — that is the point of it. Saying
+      // otherwise would put a €5 movement in the ledger that never happened.
+      return { ref: pi.id, moved: false };
     },
 
-    /* The invoice. The foxxer is known, so it goes straight to them. */
-    charge: ({ amount, currency, reference, destination }) => intent({
-      amount, currency, captureMode: 'automatic', reference, destination,
+    /* What this rail can actually take. Anything else moved somewhere else and
+     * is only being recorded — see `railFor` in payments.js. */
+    handles: ['deposit', 'card', 'apple_pay', 'google_pay'],
+
+    /*
+     * The invoice. The foxxer is known, so it is a destination charge that
+     * routes to them as it is taken and the platform fee comes off
+     * automatically. Captured on completion, unlike a deposit.
+     */
+    charge: ({ amount, currency, reference, destination, ref, key }) => session({
+      amount, currency, reference, destination, ref, key,
+      name: `Invoice ${reference || ''}`.trim(),
       description: `Foxxers — ${reference || 'job'}`,
     }),
+
+    /*
+     * Read a checkout session back.
+     *
+     * The app never needs this — the webhook tells it everything, and a read
+     * is not evidence anyway. It exists for the go-live checker: a completed
+     * session is the only place the PaymentIntent id appears, and making
+     * someone dig it out of the dashboard by hand is the kind of friction
+     * that stops a check being run twice.
+     */
+    retrieveSession: ({ id }) => call('GET', `/v1/checkout/sessions/${encodeURIComponent(id)}`),
 
     /* ---- connected accounts ------------------------------------------- */
 
@@ -203,13 +367,30 @@ function create({ secretKey, base, publicUrl, feeBps = 0, feeFlat = 0 } = {}) {
      * the result; Foxxers stores an id and never sees a bank detail.
      */
     async createAccount({ email, business, country = 'IE' }) {
-      const acct = await call('POST', '/v1/accounts', {
-        type: 'express',
-        country,
-        email,
-        business_type: 'individual',
-        business_profile: { name: business, product_description: 'Trade services booked through Foxxers' },
-        capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
+      const acct = await call('POST', '/v2/core/accounts', {
+        contact_email: email,
+        display_name: business,
+        // Stripe's own dashboard for the foxxer. They are sole traders, not
+        // finance teams; a full dashboard is more than they asked for.
+        dashboard: 'express',
+        identity: { country: String(country).toLowerCase(), entity_type: 'individual' },
+        configuration: {
+          // Two configurations, for the two ways money reaches a foxxer.
+          // `merchant` lets an invoice be charged and routed to them.
+          merchant: { capabilities: { card_payments: { requested: true } } },
+          // `recipient` lets a captured deposit be transferred to them, which
+          // is a separate movement with no charge of its own.
+          recipient: {
+            capabilities: { stripe_balance: { stripe_transfers: { requested: true } } },
+          },
+        },
+        defaults: {
+          currency: country === 'UK' || country === 'GB' ? 'gbp' : 'eur',
+          // The platform carries losses and pays the fees. This is the
+          // liability decision, stated rather than implied by an account type.
+          responsibilities: { fees_collector: 'application', losses_collector: 'application' },
+        },
+        include: ['configuration.merchant', 'configuration.recipient', 'requirements'],
       });
       return { id: acct.id };
     },
@@ -224,14 +405,37 @@ function create({ secretKey, base, publicUrl, feeBps = 0, feeFlat = 0 } = {}) {
       return { url: link.url, expiresAt: link.expires_at };
     },
 
+    /*
+     * What a v2 account can currently do. There is no `charges_enabled` flag
+     * any more: each capability carries its own status, and the ones that
+     * matter here are being able to take a card and being able to be paid out.
+     *
+     * The `include` list is load-bearing — without it every one of these comes
+     * back null, which is indistinguishable from a foxxer who has done nothing.
+     */
     async account({ accountId }) {
-      const a = await call('GET', `/v1/accounts/${encodeURIComponent(accountId)}`);
+      const include = ['configuration.merchant', 'configuration.recipient', 'requirements']
+        .map((i) => `include=${encodeURIComponent(i)}`).join('&');
+      const a = await call('GET', `/v2/core/accounts/${encodeURIComponent(accountId)}?${include}`);
+
+      const merchant = a.configuration?.merchant?.capabilities || {};
+      const recipient = a.configuration?.recipient?.capabilities || {};
+      const active = (cap) => cap?.status === 'active';
+      const balanceOf = (c) => c?.stripe_balance || {};
+
+      const entries = a.requirements?.entries || [];
+      // Only what the foxxer can actually act on. Requirements Stripe is
+      // working through itself are not their homework, and showing them as
+      // such leaves someone refreshing a page waiting for a bank to answer.
+      const theirs = entries.filter((e) => e.awaiting_action_from === 'user');
+
       return {
         id: a.id,
-        chargesEnabled: !!a.charges_enabled,
-        payoutsEnabled: !!a.payouts_enabled,
-        detailsSubmitted: !!a.details_submitted,
-        needs: a.requirements?.currently_due || [],
+        chargesEnabled: active(merchant.card_payments),
+        payoutsEnabled: active(balanceOf(recipient).payouts) || active(balanceOf(merchant).payouts),
+        transfersEnabled: active(balanceOf(recipient).stripe_transfers),
+        detailsSubmitted: theirs.length === 0,
+        needs: theirs.map((e) => e.description).filter(Boolean),
       };
     },
   };
@@ -255,4 +459,7 @@ function verifyWebhook({ secret, signatureHeader, rawBody, toleranceSec = 300 })
   return crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expected));
 }
 
-module.exports = { create, verifyWebhook, form, toMinor, fromMinor, API_VERSION };
+module.exports = {
+  create, verifyWebhook, form, toMinor, fromMinor, describeFee,
+  API_VERSION, DEFAULT_FEE_BPS,
+};

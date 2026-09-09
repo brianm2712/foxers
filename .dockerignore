@@ -1,0 +1,13 @@
+# The live database and the session key. Never bake state into an image — a
+# rebuild would ship one server's customers to another, and the .session-key
+# inside an image is a signing key sitting in every layer that copies it.
+data/
+*.session-key
+
+.git/
+.github/
+node_modules/
+tests/
+docs/
+*.md
+.DS_Store

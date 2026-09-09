@@ -387,20 +387,25 @@ async function createRequest(store, secretIssuer, input) {
   const customer = resolveCustomer(store, input);
 
   /*
-   * The deposit is taken to send the request, not to accept the quote. It is
-   * what makes a request worth a foxxer's time to price: declined, they keep
-   * it; accepted, it comes off the invoice, so it costs a real customer
-   * nothing at all. Held here, settled by acceptQuote or declineQuote.
+   * The deposit is AUTHORISED to send the request, not charged. It is what
+   * makes a request worth a foxxer's time to price: declined, the hold is
+   * captured and they keep it; accepted, it is cancelled and the customer
+   * never pays it at all. Settled by acceptQuote or declineQuote.
+   *
+   * The reference is minted first because a hosted checkout needs somewhere to
+   * send the customer back to, and that is this job's own page.
    */
+  const ref = newRef();
   const deposit = input.deposit === null
     ? null
     : await pay.holdDeposit(store, {
         customerId: customer.id,
         region: pro ? pro.region : 'IE',
         providerName: input.provider,
+        reference: ref,
+        ref,
       });
 
-  const ref = newRef();
   const request = store.insert('requests', {
     ref,
     proId: pro ? pro.id : null,       // null = open to any matching pro
@@ -420,6 +425,57 @@ async function createRequest(store, secretIssuer, input) {
   return { request, customer, deposit, token: secretIssuer(ref) };
 }
 
+/*
+ * A card authorisation lasts about seven days, and then it is gone whether
+ * anyone noticed or not.
+ *
+ * The decision here was to expire the REQUEST along with it rather than let it
+ * sit there looking live. The alternative — leave it open and hope — means a
+ * foxxer spends an evening pricing a job whose deposit quietly evaporated,
+ * which is exactly the work the deposit exists to protect.
+ *
+ * Re-authorising instead was considered and rejected: a fresh authorisation
+ * needs the customer present to approve it, so it is a notification flow that
+ * usually will not complete, dressed up as protection.
+ */
+const HOLD_DAYS = Number(process.env.FOXXERS_HOLD_DAYS || 7);
+const HOLD_MS = HOLD_DAYS * 86400000;
+
+async function expireStaleHolds(store, { now = Date.now() } = {}) {
+  const stale = store.filter('payments', (p) => p.kind === 'deposit'
+    && (p.status === 'held' || p.status === 'pending')
+    && Date.parse(p.heldAt || 0) > 0
+    && now - Date.parse(p.heldAt) >= HOLD_MS);
+
+  for (const deposit of stale) {
+    await pay.expireDeposit(store, deposit.id);
+    // The request goes with it, but only if it is still waiting on an answer.
+    // One that was accepted or declined has already had its deposit settled.
+    const request = store.find('requests', (r) => r.depositId === deposit.id);
+    if (request && (request.status === 'open' || request.status === 'quoted')) {
+      store.update('requests', request.id, { status: 'expired', expiredAt: new Date(now).toISOString() });
+    }
+    store.log('deposit.expired', deposit.id, { ref: request?.ref || null, days: HOLD_DAYS });
+  }
+  return stale.length;
+}
+
+/*
+ * Refuse to quote a request whose protection has gone. Checked rather than
+ * assumed, because the sweep runs on a timer and a request can go stale
+ * between two clicks.
+ */
+function assertQuotable(store, request) {
+  if (!request) return;
+  if (request.status === 'expired') {
+    bad('That request expired — its deposit hold lapsed, so it is no longer open', 'expired');
+  }
+  const deposit = request.depositId ? store.get('payments', request.depositId) : null;
+  if (deposit && deposit.status === 'expired') {
+    bad('That request expired — its deposit hold lapsed, so it is no longer open', 'expired');
+  }
+}
+
 /* ---- quotes ---------------------------------------------------------- */
 
 function createQuote(store, proId, input) {
@@ -429,6 +485,7 @@ function createQuote(store, proId, input) {
   if (request && request.proId && request.proId !== pro.id) {
     throw new DomainError('That request belongs to another tradesperson', 403, 'forbidden');
   }
+  assertQuotable(store, request);
 
   const lines = Array.isArray(input.lines) ? input.lines : [];
   if (!lines.length) bad('A quote needs at least one line');
@@ -556,9 +613,14 @@ async function acceptQuote(store, quoteId, who = 'customer', choice = {}) {
     agreed: JSON.parse(JSON.stringify(quote.totals)),
   });
 
-  // The deposit was the foxxer's to keep only if this went nowhere.
+  /*
+   * The deposit was the foxxer's to keep only if this went nowhere. It did
+   * not, so the hold is cancelled and the customer is never charged it. The
+   * invoice is for the full price: there is no €5 to credit, because no €5
+   * was ever taken.
+   */
   const deposit = depositForQuote(store, quote);
-  if (deposit && deposit.status === 'held') pay.creditDeposit(store, deposit.id, pro.id);
+  if (deposit && deposit.status === 'held') await pay.releaseDeposit(store, deposit.id, pro.id);
 
   if (quote.requestId) store.update('requests', quote.requestId, { status: 'accepted' });
   store.log('quote.accepted', quoteId, { by: who, gross: quote.totals.gross, slot: booking?.start || null });
@@ -686,7 +748,47 @@ async function settleInvoice(store, invoiceId, input = {}) {
     providerName: input.provider,
   });
 
-  const paid = store.update('invoices', invoiceId, {
+  /*
+   * A real rail does not move money when a form is submitted: the customer has
+   * to complete a checkout, and we only learn the outcome from a webhook. So
+   * the invoice stays issued and no receipt is written — a receipt is proof of
+   * payment, and issuing one for money that has not arrived is the one lie
+   * this app cannot tell. `completePayment` finishes it when Stripe says so.
+   */
+  if (payment.status === 'pending') {
+    store.log('invoice.awaiting', invoiceId, {
+      number: inv.number, method: payment.method, provider: payment.provider,
+    });
+    return { invoice: inv, payment, receipt: null, checkoutUrl: payment.checkoutUrl || null };
+  }
+  return { ...completePayment(store, payment.id), checkoutUrl: null };
+}
+
+/*
+ * Money has actually arrived: mark the invoice paid and issue the receipt.
+ *
+ * Called straight after taking payment on a rail that settles on the spot
+ * (cash, a transfer the foxxer confirms), and from the webhook otherwise.
+ * Idempotent, because webhooks are redelivered: a second call returns the
+ * receipt already written rather than a second one.
+ */
+function completePayment(store, paymentId) {
+  const payment = store.get('payments', paymentId) || notFound('Payment');
+  const inv = store.get('invoices', payment.invoiceId) || notFound('Invoice');
+  const pro = store.get('pros', inv.proId) || notFound('Tradesperson');
+
+  const already = store.find('receipts', (r) => r.invoiceId === inv.id);
+  if (already) return { invoice: inv, payment, receipt: already };
+
+  // A payment that was waiting on a rail has now landed. Written here rather
+  // than at the call site so the two ways in cannot disagree about it.
+  const settled = payment.status === 'pending'
+    ? store.update('payments', payment.id, {
+        status: 'paid', moved: true, settledAt: new Date().toISOString(),
+      })
+    : payment;
+
+  const paid = store.update('invoices', inv.id, {
     status: 'paid',
     paidAt: new Date().toISOString(),
     paidMethod: payment.method,
@@ -711,14 +813,20 @@ async function settleInvoice(store, invoiceId, input = {}) {
     lines: inv.lines,
     totals: inv.totals,
     depositCredit: inv.depositCredit || 0,
-    paid: payment.amount,
-    method: payment.method,
-    provider: payment.provider,
-    providerRef: payment.providerRef,
-    settled: !!payment.moved,
+    paid: settled.amount,
+    method: settled.method,
+    provider: settled.provider,
+    providerRef: settled.providerRef,
+    settled: !!settled.moved,
+    /* Which account the money went to, and what the platform took, recorded
+     * on the document itself — a receipt that cannot answer that is not much
+     * of a record when somebody queries it a year later. */
+    destination: settled.destination || null,
+    platformFee: settled.fee || 0,
   });
-  store.log('invoice.settled', invoiceId, { number: inv.number, method: payment.method, amount });
-  return { invoice: paid, payment, receipt };
+  store.log('invoice.settled', inv.id,
+    { number: inv.number, method: settled.method, amount: settled.amount });
+  return { invoice: paid, payment: settled, receipt };
 }
 
 function markPaid(store, invoiceId, input = {}) {
@@ -816,7 +924,8 @@ module.exports = {
   DomainError, createPro, initials, proBySlug, availabilityFor, busyFor, ratingFor,
   searchPros, publicPro, addService, upsertCustomer, createBooking, createRequest,
   customerByEmail, createCustomerAccount, updateCustomer, jobsForCustomer,
-  offerableSlots, depositForQuote,
+  offerableSlots, depositForQuote, expireStaleHolds, assertQuotable, HOLD_DAYS,
   createQuote, acceptQuote, declineQuote, createInvoice, markPaid, settleInvoice,
+  completePayment,
   chasesDue, recordChase, addReview, CHASE_STEPS, money,
 };

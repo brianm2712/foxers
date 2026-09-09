@@ -43,8 +43,23 @@ test.before(async () => {
   await waitForHealth(base);
 });
 
-test.after(() => {
-  if (child) child.kill('SIGTERM');
+/*
+ * Ask the server to stop, then wait until it is actually gone. It flushes the
+ * store on the way out, so removing the data directory while it is still
+ * shutting down is a race: rmSync walks past foxxers.json, the server writes
+ * it back, and the rmdir behind it finds a directory that is not empty.
+ */
+function stopServer(child) {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve();
+    const hard = setTimeout(() => child.kill('SIGKILL'), 5000);
+    child.once('exit', () => { clearTimeout(hard); resolve(); });
+    child.kill('SIGTERM');
+  });
+}
+
+test.after(async () => {
+  if (child) await stopServer(child);
   if (dataDir) fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
@@ -472,7 +487,9 @@ test('sending a request holds a EUR 5 deposit', async () => {
   assert.strictEqual(job.deposit.settled, false, 'no provider is wired in, so no money has moved');
 
   const view = await api('GET', `/api/v1/jobs/${job.ref}?t=${encodeURIComponent(job.token)}`, undefined, { token: null });
-  assert.match(view.body.deposit.note, /comes off the price/);
+  // A hold, not a charge: what the customer is told has to match what their
+  // statement will show, which is nothing at all until a quote is declined.
+  assert.match(view.body.deposit.note, /released if you go ahead/);
 });
 
 test('a declined quote leaves the deposit with the foxxer', async () => {
@@ -496,7 +513,7 @@ test('a declined quote leaves the deposit with the foxxer', async () => {
   assert.ok(deposits.body.earned >= 5, 'it shows up as earned');
 });
 
-test('accepting a quote locks the offered time and credits the deposit', async () => {
+test('accepting a quote locks the offered time and releases the deposit', async () => {
   const job = await askFor('Two extra sockets wanted in the back bedroom, first floor.');
   const request = (await api('GET', '/api/v1/pro/requests')).body.requests.find((r) => r.ref === job.ref);
 
@@ -535,7 +552,7 @@ test('accepting a quote locks the offered time and credits the deposit', async (
     { quoteId: q.body.id, start: offered[1] }, { token: null });
   assert.strictEqual(ok.status, 200, ok.raw);
   assert.strictEqual(ok.body.quotes[0].acceptedSlot, offered[1]);
-  assert.strictEqual(ok.body.deposit.status, 'credited');
+  assert.strictEqual(ok.body.deposit.status, 'released');
 
   const diary = await api('GET', '/api/v1/pro/bookings');
   const locked = diary.body.bookings.find((b) => b.ref === job.ref);
@@ -548,19 +565,23 @@ test('accepting a quote locks the offered time and credits the deposit', async (
   assert.ok(!gone.body.days.flatMap((d) => d.slots).map((s) => s.start).includes(offered[1]),
     'and that hour is no longer free to offer anyone else');
 
-  // The invoice charges VAT on the whole price and takes the EUR 5 off the end.
+  /*
+   * The invoice is for the whole price. The deposit was released rather than
+   * charged, so there is nothing to credit and no EUR 5 line to explain — the
+   * customer pays the quoted figure and nothing else.
+   */
   const inv = await api('POST', '/api/v1/pro/invoices', { quoteId: q.body.id, withholdingRate: 20 });
   assert.strictEqual(inv.status, 201, inv.raw);
   const row = (await api('GET', '/api/v1/pro/invoices')).body.invoices.find((i) => i.id === inv.body.id);
-  assert.strictEqual(row.depositCredit, 5);
-  assert.strictEqual(row.dueNow, Math.round((row.payable - 5) * 100) / 100);
+  assert.strictEqual(row.depositCredit, 0);
+  assert.strictEqual(row.dueNow, row.payable);
   assert.strictEqual(inv.body.totals.gross, Math.round((inv.body.totals.net * 1.135) * 100) / 100,
-    'VAT is charged on the full price, not on the price less the deposit');
+    'VAT is charged on the full price');
 
   const paid = await api('POST', `/api/v1/pro/invoices/${inv.body.id}/paid`, { method: 'card_reader' });
   assert.strictEqual(paid.status, 200, paid.raw);
-  assert.strictEqual(paid.body.paid, row.dueNow, 'the tap is for what is left after the deposit');
-  assert.strictEqual(paid.body.receipt.depositCredit, 5);
+  assert.strictEqual(paid.body.paid, row.dueNow, 'the tap is for the full quoted price');
+  assert.strictEqual(paid.body.receipt.depositCredit, 0);
   assert.strictEqual(paid.body.receipt.methodName, 'Card reader (tap)');
   assert.ok(paid.body.receipt.number.startsWith('R-'), 'the receipt is numbered off the invoice');
 
@@ -690,6 +711,10 @@ test('a brand new foxxer is told what stands between them and being bookable', a
   }, { token: t });
   d = (await api('GET', '/api/v1/pro/dashboard', undefined, { token: t })).body;
   assert.strictEqual(d.setup.fresh, false, 'and now the money screen is the useful one');
+
+  // Nothing to onboard to on `manual`, so the guide must not carry a step
+  // nobody can ever finish.
+  assert.strictEqual(d.setup.payouts, 'not_required');
 });
 
 test('a wrong address gets the app and a 404, not two words of plain text', async () => {
@@ -713,4 +738,30 @@ test('a payment webhook is the only thing that can move money, and it must be si
   // so an instance with no payment provider cannot be poked at.
   const off = await api('POST', '/api/v1/webhooks/revolut', { state: 'completed' }, { token: null });
   assert.strictEqual(off.status, 404, 'no secret, no endpoint');
+
+  const stripeOff = await api('POST', '/api/v1/webhooks/stripe', { type: 'account.updated' }, { token: null });
+  assert.strictEqual(stripeOff.status, 404, 'and the same for Stripe');
+});
+
+test('an instance with no card rail does not offer a card payment link', async () => {
+  // Offering it would promise a link this instance cannot produce; the money
+  // would quietly be recorded as taken instead.
+  const m = await api('GET', '/api/v1/meta');
+  const keys = m.body.paymentMethods.map((x) => x.key);
+  assert.ok(!keys.includes('card'), 'no card link on `manual`');
+  assert.ok(keys.includes('cash') && keys.includes('transfer'), 'but the real-world ones stay');
+});
+
+test('an instance taking no cards does not nag a foxxer to onboard', async () => {
+  // On `manual` there is nothing to onboard to, so "not started" would be a
+  // lie that puts a permanent red card in the Business tab of every demo.
+  const r = await api('GET', '/api/v1/pro/payouts');
+  assert.strictEqual(r.status, 200, r.raw);
+  assert.strictEqual(r.body.provider, 'manual');
+  assert.strictEqual(r.body.status, 'not_required');
+  assert.strictEqual(r.body.canBePaid, false);
+
+  const o = await api('POST', '/api/v1/pro/payouts/onboard');
+  assert.strictEqual(o.status, 400, o.raw);
+  assert.strictEqual(o.body.code, 'no_provider');
 });

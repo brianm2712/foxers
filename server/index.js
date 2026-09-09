@@ -26,6 +26,8 @@ const { vatClasses, withholdingRates } = require('./lib/tax');
 const pay = require('./lib/payments');
 const { VERSION, API_VERSION } = require('./version');
 const revolut = require('./lib/providers/revolut');
+const stripe = require('./lib/providers/stripe');
+const agreement = require('./lib/agreement');
 
 /*
  * Which rail moves the money. Nothing but `manual` unless the environment
@@ -34,10 +36,19 @@ const revolut = require('./lib/providers/revolut');
  * fails loudly at boot rather than at the first payment.
  */
 const PAYMENTS = process.env.FOXXERS_PAYMENTS || 'manual';
+/* Held separately from the payments registry: Connect has account routes that
+ * are nothing to do with taking money, and only Stripe has them. */
+let connect = null;
 if (PAYMENTS === 'revolut') {
   pay.registerProvider(revolut.create());
   console.log('[foxxers] payments: revolut (%s)',
     process.env.FOXXERS_REVOLUT_LIVE === '1' ? 'LIVE' : 'sandbox');
+} else if (PAYMENTS === 'stripe') {
+  connect = stripe.create();
+  pay.registerProvider(connect);
+  // The key says which it is. Nothing to configure, nothing to get wrong.
+  console.log('[foxxers] payments: stripe Connect (%s)',
+    /^sk_live/.test(process.env.FOXXERS_STRIPE_SECRET_KEY || '') ? 'LIVE' : 'test');
 } else if (PAYMENTS !== 'manual') {
   throw new Error(`Unknown FOXXERS_PAYMENTS: ${PAYMENTS}`);
 }
@@ -87,6 +98,17 @@ const limits = {
   read: new auth.RateLimit(ceiling('READ', 600), 5 * 60 * 1000),
 };
 setInterval(() => Object.values(limits).forEach((l) => l.sweep()), 60_000).unref();
+
+/*
+ * Card holds last about a week, and a request whose hold has lapsed is closed
+ * rather than left looking live — see `expireStaleHolds`. Quarter-hourly is
+ * far finer than a seven-day window needs; the cost is a scan of one array.
+ * `createQuote` re-checks anyway, so a request cannot be quoted in the gap.
+ */
+const sweepHolds = () => D.expireStaleHolds(store)
+  .catch((err) => console.error('[foxxers] hold sweep failed:', err.message));
+setInterval(sweepHolds, 15 * 60_000).unref();
+sweepHolds();
 
 const issueJobToken = (ref) => auth.issueJobToken(SECRET, ref);
 
@@ -249,14 +271,20 @@ function depositView(request) {
   const d = request?.depositId ? store.get('payments', request.depositId) : null;
   if (!d) return null;
   const said = {
-    held: 'Held. It comes off the price if you accept the quote.',
+    pending: 'Waiting on your card. Nothing has been taken yet.',
+    held: 'Held on your card, not charged. It is released if you go ahead.',
+    released: 'Released — you were never charged it.',
     credited: 'Credited — it has come off what you owe.',
     captured: 'Kept by the tradesperson for pricing the job.',
+    expired: 'The hold lapsed after a week, so this request has closed.',
     refunded: 'Refunded.',
+    failed: 'Your card was not accepted.',
   };
   return {
     amount: d.amount, currency: d.currency, status: d.status,
     note: said[d.status] || null,
+    // Only while there is something for them to do about it.
+    checkoutUrl: d.status === 'pending' ? d.checkoutUrl || null : null,
     settled: !!d.moved,
   };
 }
@@ -302,7 +330,7 @@ on('GET', '/api/v1/meta', async (req, res) => {
     withholding: { IE: withholdingRates('IE'), UK: withholdingRates('UK') },
     version: VERSION,
     deposit: { IE: pay.depositAmount('IE'), UK: pay.depositAmount('UK') },
-    paymentMethods: pay.METHODS,
+    paymentMethods: pay.availableMethods(),
     days: DAYS,
   });
 });
@@ -365,8 +393,11 @@ on('POST', '/api/v1/requests', async (req, res) => {
   const token = issueJobToken(request.ref);
   H.json(res, 201, {
     ref: request.ref, token, job: jobView(request.ref),
+    // The checkout link matters most right here: on a real rail the hold does
+    // not exist until the customer has been through Stripe's page.
     deposit: deposit ? { id: deposit.id, amount: deposit.amount, currency: deposit.currency,
-      status: deposit.status, settled: deposit.moved } : null,
+      status: deposit.status, checkoutUrl: deposit.checkoutUrl || null,
+      settled: deposit.moved } : null,
   });
 });
 
@@ -475,6 +506,140 @@ on('POST', '/api/v1/webhooks/revolut', async (req, res) => {
     if (paid && payment.invoiceId) D.markPaid(store, payment.invoiceId, { amount: payment.amount });
   }
   store.log('webhook.applied', payment.id, { state, kind: payment.kind });
+  H.json(res, 200, { ok: true, matched: true });
+});
+
+/*
+ * Stripe. Phase 1 carries one kind of event: something about a connected
+ * account changed, so what we believe about whether a foxxer can be paid has
+ * to change with it. Onboarding finishes on Stripe's own pages, where this app
+ * never sees the foxxer come back, so the webhook is the only thing that
+ * learns it promptly.
+ *
+ * A v2 event is thin — it names the account and where to read it, and carries
+ * none of its state. That is a better shape than it first looks: there is no
+ * payload to trust, so the handler re-reads the account and the cache can only
+ * ever be written from something Stripe actually said.
+ */
+on('POST', '/api/v1/webhooks/stripe', async (req, res) => {
+  const secret = process.env.FOXXERS_STRIPE_WEBHOOK_SECRET;
+  if (!secret) return H.fail(req, res, 404, 'No such endpoint', 'not_found');
+
+  const raw = (await H.readBody(req)).toString('utf8');
+  const ok = stripe.verifyWebhook({
+    secret,
+    signatureHeader: req.headers['stripe-signature'],
+    rawBody: raw,
+  });
+  if (!ok) {
+    store.log('webhook.rejected', 'stripe', { ip: H.clientIp(req) });
+    return H.fail(req, res, 401, 'Bad signature', 'bad_signature');
+  }
+
+  let event;
+  try { event = JSON.parse(raw); } catch { return H.fail(req, res, 400, 'Not JSON', 'bad_request'); }
+
+  /*
+   * Two event families say the same thing, and this endpoint gets whichever
+   * Stripe decides to send.
+   *
+   *   v2.core.account…  thin events, delivered to a v2 event destination.
+   *   account.updated   the v1 connect events a classic webhook endpoint
+   *   capability.updated actually receives — including for v2 accounts. An
+   *   person.*          endpoint that handles only the thin events passes its
+   *                     tests and tracks nothing in production. Verified the
+   *                     hard way against real Stripe.
+   *
+   * Both mean "go and look again", so neither is parsed for state. Matched by
+   * prefix because Stripe adds more as capabilities grow.
+   */
+  const type = String(event.type || '');
+
+  /*
+   * The customer finished a hosted checkout. This is the only thing that marks
+   * an invoice paid on a real rail — they may equally have closed the tab on
+   * the success page, and nothing in a browser is evidence either way.
+   */
+  if (type === 'checkout.session.completed' || type === 'checkout.session.async_payment_succeeded') {
+    const session = event.data?.object || {};
+    const payment = session.id ? store.find('payments', (p) => p.providerRef === session.id) : null;
+    if (!payment) {
+      store.log('webhook.unknown', String(session.id || ''), { event: type });
+      return H.json(res, 200, { ok: true, matched: false });
+    }
+    /*
+     * A deposit goes through the same checkout page, but completing it
+     * authorises rather than charges — `payment_status` stays unpaid, and the
+     * event that says the money is genuinely held is the one below. Marking
+     * an invoice paid from here would be wrong twice over: a deposit has no
+     * invoice, and nothing has been captured.
+     */
+    if (payment.kind === 'deposit') {
+      /*
+       * This is the first thing that names the PaymentIntent. Creating a
+       * session does not produce one — real Stripe returns null — so without
+       * recording it here there would be nothing to capture or cancel later.
+       */
+      if (session.payment_intent && !payment.paymentIntentRef) {
+        store.update('payments', payment.id, { paymentIntentRef: session.payment_intent });
+      }
+      return H.json(res, 200, { ok: true, matched: true, ignored: 'deposit_authorised' });
+    }
+    if (session.payment_status && session.payment_status !== 'paid') {
+      return H.json(res, 200, { ok: true, matched: true, ignored: session.payment_status });
+    }
+    const { invoice } = D.completePayment(store, payment.id);
+    store.log('webhook.applied', payment.id, { event: type, invoice: invoice.number });
+    return H.json(res, 200, { ok: true, matched: true });
+  }
+
+  /*
+   * The money is genuinely held. This is the only thing that moves a deposit
+   * from `pending` to `held`: the customer completing a checkout page tells us
+   * they finished a form, not that their bank agreed to reserve the money.
+   */
+  if (type === 'payment_intent.amount_capturable_updated') {
+    const pi = event.data?.object || {};
+    /*
+     * Matched two ways, because the events race. `checkout.session.completed`
+     * is what records the intent id, and this event can arrive first — in
+     * which case there is no stored id to match on and the deposit would be
+     * stranded at `pending` forever. The reference the intent carries in its
+     * own metadata settles it either way round.
+     */
+    const ref = pi.metadata?.foxxers_ref || null;
+    const payment = store.find('payments', (p) => p.kind === 'deposit'
+      && ((pi.id && p.paymentIntentRef === pi.id) || (ref && p.ref === ref)));
+    if (!payment) {
+      store.log('webhook.unknown', String(pi.id || ''), { event: type, ref });
+      return H.json(res, 200, { ok: true, matched: false });
+    }
+    // If this won the race, it is also the first thing to name the intent.
+    if (pi.id && !payment.paymentIntentRef) {
+      store.update('payments', payment.id, { paymentIntentRef: pi.id });
+    }
+    pay.settleDeposit(store, payment.id, { ok: true, providerRef: payment.providerRef });
+    store.log('webhook.applied', payment.id, { event: type, amount: pi.amount_capturable });
+    return H.json(res, 200, { ok: true, matched: true });
+  }
+
+  const watched = type.startsWith('v2.core.account')
+    || type === 'account.updated' || type.startsWith('capability.') || type.startsWith('person.');
+  if (!watched) return H.json(res, 200, { ok: true, ignored: type });
+
+  // v2 names it on `related_object`; a v1 connect event names it on the
+  // envelope, since the object itself may be a capability or a person.
+  const accountId = event.related_object?.id || event.account || event.data?.object?.id;
+  const pro = accountId ? store.find('pros', (p) => p.stripeAccountId === accountId) : null;
+  // An account we do not know about is not worth retrying — say so, or Stripe
+  // redelivers it for days.
+  if (!pro) {
+    store.log('webhook.unknown', String(accountId || ''), { event: type });
+    return H.json(res, 200, { ok: true, matched: false });
+  }
+
+  const fresh = await refreshPayouts(pro);
+  store.log('webhook.applied', pro.id, { event: type, charges: !!fresh.payouts?.chargesEnabled });
   H.json(res, 200, { ok: true, matched: true });
 });
 
@@ -696,6 +861,9 @@ function setupState(pro, bookings, invoices) {
     hoursConfirmed: !!(av && av.confirmedAt),
     taxReady: !!(pro.vatRegistered ? pro.vatNumber : true) && !!pro.invoicePrefix,
     published: !!pro.published,
+    /* The one step that cannot be finished inside this app. Read from the
+     * cache, never from Stripe: this is the first screen of every session. */
+    payouts: payoutsView(pro).status,
     slug: pro.slug,
   };
 }
@@ -926,9 +1094,22 @@ on('POST', '/api/v1/pro/invoices/:id/paid', async (req, res, p) => {
   const inv = store.get('invoices', p.id);
   if (!inv || inv.proId !== pro.id) return H.fail(req, res, 404, 'No such invoice', 'not_found');
   const body = await H.readJson(req);
-  const { invoice, payment, receipt } = await D.settleInvoice(store, inv.id, {
-    method: body.method || 'transfer',
-    amount: body.amount,
+  const method = body.method || 'transfer';
+
+  /*
+   * Refuse to raise a card payment the foxxer cannot be paid from. Stripe
+   * would refuse it too, but a page further on and in its own words — and a
+   * charge that succeeds into an account that cannot pay out is worse than
+   * one that never starts.
+   */
+  if (pay.isOnline(method) && !payoutsView(pro).canBePaid) {
+    return H.fail(req, res, 400,
+      'Set up payouts before taking a card payment — Stripe needs to know where the money goes. Cash, a transfer or your own card reader still work.',
+      'payouts_not_ready');
+  }
+
+  const { invoice, payment, receipt, checkoutUrl } = await D.settleInvoice(store, inv.id, {
+    method, amount: body.amount,
   });
   H.json(res, 200, {
     ok: true,
@@ -937,6 +1118,9 @@ on('POST', '/api/v1/pro/invoices/:id/paid', async (req, res, p) => {
     method: payment.method,
     settled: !!payment.moved,
     receipt: receiptView(receipt),
+    // Present only when the customer has to go and pay: the money has not
+    // moved and this invoice is still owed until a webhook says otherwise.
+    checkoutUrl: checkoutUrl || null,
     customerLink: `/j/${invoice.ref}?t=${issueJobToken(invoice.ref)}`,
   });
 });
@@ -967,6 +1151,11 @@ on('GET', '/api/v1/pro/deposits', async (req, res) => {
   }));
   H.json(res, 200, {
     earned: round2(rows.filter((r) => r.status === 'captured').reduce((s, r) => s + r.amount, 0)),
+    // Released is the happy path now; credited is the older charge-then-credit
+    // rule, and is kept so a foxxer's history does not lose money it counted.
+    released: round2(rows
+      .filter((r) => r.status === 'released' || r.status === 'credited')
+      .reduce((s, r) => s + r.amount, 0)),
     credited: round2(rows.filter((r) => r.status === 'credited').reduce((s, r) => s + r.amount, 0)),
     deposits: rows.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)),
   });
@@ -983,6 +1172,184 @@ on('POST', '/api/v1/pro/chases/:invoiceId', async (req, res, p) => {
   if (!inv || inv.proId !== pro.id) return H.fail(req, res, 404, 'No such invoice', 'not_found');
   const body = await H.readJson(req);
   H.json(res, 200, { ok: true, chases: (D.recordChase(store, inv.id, String(body.key), body.channel).chases || []).length });
+});
+
+/* ---- payouts --------------------------------------------------------- */
+
+/*
+ * Whether this foxxer can be paid through the app.
+ *
+ * A foxxer who has not onboarded is NOT hidden and NOT blocked. They appear in
+ * search, take requests and quote like anyone else — putting ID and a bank
+ * account between signing up and getting any value is how a marketplace never
+ * reaches its first hundred trades. What they get instead is a loud card in
+ * the Business tab, and the honest answer here.
+ *
+ * The cache exists so a page can render without a round trip to Stripe. It is
+ * only ever written from something Stripe said — a `GET` on the account, or an
+ * `account.updated` webhook. Nothing in the browser can move it.
+ */
+function payoutsView(pro) {
+  const c = pro.payouts || null;
+  /*
+   * Being able to take a card and being able to receive the money are two
+   * different capabilities, and a destination charge needs both: the platform
+   * takes the payment, then routes it onward. Real Stripe refuses the charge
+   * with `insufficient_capabilities_for_transfer` when the second is missing,
+   * so checking only the first sends a foxxer to a failure at the till.
+   */
+  const canBePaid = !!(c?.chargesEnabled && c?.transfersEnabled);
+  // On `manual` there is nothing to onboard to. Saying "not started" would put
+  // a permanent red card in the Business tab of an instance taking no cards.
+  const status = !connect ? 'not_required'
+    : !pro.stripeAccountId ? 'not_started'
+    : (canBePaid && c.payoutsEnabled) ? 'ready' : 'incomplete';
+  return {
+    provider: connect ? 'stripe' : 'manual',
+    status,
+    accountId: pro.stripeAccountId || null,
+    chargesEnabled: !!c?.chargesEnabled,
+    payoutsEnabled: !!c?.payoutsEnabled,
+    transfersEnabled: !!c?.transfersEnabled,
+    detailsSubmitted: !!c?.detailsSubmitted,
+    needs: c?.needs || [],
+    /* The invoice route refuses to raise a card payment when this is false. */
+    canBePaid,
+    checkedAt: c?.checkedAt || null,
+    /*
+     * What the platform takes, and what they agreed to. Both are here rather
+     * than only on a settings page nobody opens, because this is the card a
+     * foxxer reads immediately before deciding to hand Stripe their ID.
+     */
+    fee: platformFee(),
+    agreement: agreementState(pro),
+  };
+}
+
+/* Zero on an instance with no rail: nothing is deducted, so nothing is claimed. */
+function platformFee() {
+  return connect?.fee ? connect.fee() : { bps: 0, cents: 0, description: 'no platform fee' };
+}
+
+/*
+ * Acceptance is recorded against a version, so it always means a specific set
+ * of words. The fee in force at the time goes with it: an instance that later
+ * changes its cut must not be able to say the foxxer agreed to the new one.
+ */
+function agreementState(pro) {
+  const a = pro.agreement || null;
+  const fee = platformFee();
+  return {
+    version: agreement.VERSION,
+    accepted: a ? { version: a.version, at: a.at } : null,
+    current: !!a && a.version === agreement.VERSION,
+    feeChanged: !!a && (a.feeBps !== fee.bps || a.feeCents !== fee.cents),
+  };
+}
+
+function cachePayouts(pro, a) {
+  return store.update('pros', pro.id, {
+    payouts: {
+      chargesEnabled: !!a.chargesEnabled, payoutsEnabled: !!a.payoutsEnabled,
+      transfersEnabled: !!a.transfersEnabled,
+      detailsSubmitted: !!a.detailsSubmitted, needs: a.needs || [],
+      checkedAt: new Date().toISOString(),
+    },
+  });
+}
+
+/* Ask Stripe rather than trusting the cache: onboarding finishes on Stripe's
+ * own pages, and the webhook that says so can be late or lost. */
+async function refreshPayouts(pro) {
+  if (!connect || !pro.stripeAccountId) return pro;
+  return cachePayouts(pro, await connect.account({ accountId: pro.stripeAccountId }));
+}
+
+on('GET', '/api/v1/pro/payouts', async (req, res) => {
+  const pro = requirePro(req, res); if (!pro) return;
+  H.json(res, 200, payoutsView(await refreshPayouts(pro)));
+});
+
+/*
+ * Start, or resume, onboarding. The account is created once and kept: a second
+ * one would split a foxxer's money across two Stripe accounts and orphan the
+ * first. Links, unlike accounts, are single-use and short-lived, so every call
+ * mints a fresh one.
+ */
+/*
+ * The agreement, and accepting it.
+ *
+ * The fee is interpolated from what this instance actually deducts rather than
+ * typed into the text, so the words and the arithmetic cannot drift apart.
+ */
+on('GET', '/api/v1/pro/agreement', async (req, res) => {
+  const pro = requirePro(req, res); if (!pro) return;
+  const fee = platformFee();
+  H.json(res, 200, {
+    version: agreement.VERSION,
+    title: agreement.TITLE,
+    body: agreement.body({ feeDescription: fee.description }),
+    fee,
+    ...agreementState(pro),
+  });
+});
+
+on('POST', '/api/v1/pro/agreement/accept', async (req, res) => {
+  const pro = requirePro(req, res); if (!pro) return;
+  const body = await H.readJson(req);
+  /*
+   * The version has to come back from the client. Accepting whatever the
+   * server currently holds would record agreement to words that may have
+   * changed between the page loading and the button being pressed — which is
+   * exactly the case a version exists to catch.
+   */
+  if (String(body.version || '') !== agreement.VERSION) {
+    return H.fail(req, res, 400,
+      'The agreement has changed since you opened it — please read it again',
+      'stale_agreement');
+  }
+  const fee = platformFee();
+  const updated = store.update('pros', pro.id, {
+    agreement: {
+      version: agreement.VERSION,
+      at: new Date().toISOString(),
+      // What they were told it would cost, kept so a later change to the fee
+      // cannot be presented as something they already agreed to.
+      feeBps: fee.bps,
+      feeCents: fee.cents,
+      ip: H.clientIp(req),
+    },
+  });
+  store.log('agreement.accepted', pro.id, { version: agreement.VERSION, feeBps: fee.bps });
+  H.json(res, 200, agreementState(updated));
+});
+
+on('POST', '/api/v1/pro/payouts/onboard', async (req, res) => {
+  const pro = requirePro(req, res); if (!pro) return;
+  if (!connect) return H.fail(req, res, 400, 'This instance does not take card payments', 'no_provider');
+
+  /*
+   * Checked before anything is created at Stripe, so a refusal here cannot
+   * leave a half-made connected account behind with nobody having agreed to
+   * anything.
+   */
+  if (!agreementState(pro).current) {
+    return H.fail(req, res, 400,
+      'Read and accept the platform agreement before setting up payouts',
+      'agreement_required');
+  }
+
+  let current = pro;
+  if (!current.stripeAccountId) {
+    const acct = await connect.createAccount({
+      email: pro.email, business: pro.business, country: pro.region === 'UK' ? 'GB' : 'IE',
+    });
+    current = store.update('pros', pro.id, { stripeAccountId: acct.id });
+    store.log('payouts.account.created', pro.id, { account: acct.id });
+  }
+  const link = await connect.accountLink({ accountId: current.stripeAccountId });
+  current = await refreshPayouts(current);
+  H.json(res, 200, { ...payoutsView(current), url: link.url, expiresAt: link.expiresAt });
 });
 
 on('PUT', '/api/v1/pro/profile', async (req, res) => {

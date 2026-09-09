@@ -155,6 +155,26 @@ input, select, textarea {
 }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--amber-dim); outline-offset: 1px; border-color: transparent; }
 textarea { min-height: 96px; resize: vertical; }
+
+/*
+ * A checkbox is not a text field. The 100% above stretches one across its
+ * whole row and drops the label it belongs to onto the next line, which reads
+ * as an unlabelled box floating in the middle of a card.
+ */
+input[type="checkbox"], input[type="radio"] {
+  width: auto; flex: none; margin: 0; accent-color: var(--amber);
+}
+
+/*
+ * Long-form legal text. Preformatted so the agreement keeps the shape it was
+ * written in, but wrapped and set in the body face — a wall of monospace is
+ * how a document gets skipped.
+ */
+pre.agreement {
+  font: inherit; margin: .6rem 0 0; max-height: 22rem; overflow-y: auto;
+  padding: .9rem 1rem; border: 1px solid var(--line); border-radius: 9px;
+  background: var(--charcoal); color: var(--muted); line-height: 1.5;
+}
 .field + .field { margin-top: .7rem; }
 .inline-fields { display: grid; gap: .7rem; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 .check { display: flex; align-items: center; gap: .5rem; }

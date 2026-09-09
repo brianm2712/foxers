@@ -471,9 +471,10 @@ function depositNote(m, pro) {
   const region = pro?.region || 'IE';
   const amount = m.deposit?.[region] ?? 5;
   return el('div', { class: 'notice info', style: 'margin:1rem 0 0' },
-    el('strong', {}, `${money(amount, region)} to send this. `),
-    'It comes straight off the price if you go ahead with the quote. ',
-    'If you turn the quote down, the tradesperson keeps it for the time spent pricing your job.');
+    el('strong', {}, `${money(amount, region)} held on your card to send this. `),
+    'It is not charged. If you go ahead with the quote the hold is released and you pay ',
+    'nothing for it at all. If you turn the quote down, it goes to the tradesperson for ',
+    'the time spent pricing your job.');
 }
 
 /* ---- the customer's job --------------------------------------------- */
@@ -757,15 +758,20 @@ function leftReviewCard(r) {
 }
 
 function depositCard(d, region) {
-  const tone = { held: '', credited: 'good', captured: 'amber', refunded: '' }[d.status] || '';
+  const tone = {
+    pending: '', held: '', released: 'good', credited: 'good',
+    captured: 'amber', expired: 'amber', failed: 'amber', refunded: '',
+  }[d.status] || '';
   return el('div', { class: 'card' },
     el('div', { class: 'row between' },
       el('div', {},
         el('h3', { style: 'margin:0' }, 'Deposit ', money(d.amount, region)),
         el('small', {}, d.note)),
       el('span', { class: `chip ${tone}` }, d.status)),
-    d.settled ? null : el('small', { class: 'muted' },
-      'No card has been charged — this instance has no payment provider connected.'));
+    // The one thing they can still act on: a hold that was never completed.
+    d.checkoutUrl ? el('a', { class: 'btn', href: d.checkoutUrl }, 'Complete the hold') : null,
+    d.settled || d.status === 'pending' ? null : el('small', { class: 'muted' },
+      'No card has been charged.'));
 }
 
 /*
